@@ -1,3 +1,3 @@
-from dataset.dataset import DSFLPartitionedDataset
+from dataset.dataset import DSFLPartitionedDataset, DSFLPartitionType
 
-__all__ = ["DSFLPartitionedDataset"]
+__all__ = ["DSFLPartitionedDataset", "DSFLPartitionType"]

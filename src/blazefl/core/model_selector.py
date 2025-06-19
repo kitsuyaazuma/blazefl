@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
+from typing import Protocol
 
 import torch
 
 
-class ModelSelector(ABC):
+class ModelSelector(Protocol):
     """
     Abstract base class for selecting models in federated learning.
 
@@ -14,7 +14,6 @@ class ModelSelector(ABC):
         NotImplementedError: If the method is not implemented in a subclass.
     """
 
-    @abstractmethod
     def select_model(self, model_name: str) -> torch.nn.Module:
         """
         Select and return a model instance by its name.

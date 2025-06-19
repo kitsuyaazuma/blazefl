@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 import torchvision
+from blazefl.contrib import FedAvgPartitionType
 from blazefl.core import PartitionedDataset
 from blazefl.utils import FilteredDataset
 from torch.utils.data import DataLoader, Dataset
@@ -15,7 +16,7 @@ from dataset.functional import (
 )
 
 
-class PartitionedCIFAR10(PartitionedDataset):
+class PartitionedCIFAR10(PartitionedDataset[FedAvgPartitionType]):
     def __init__(
         self,
         root: Path,
@@ -107,24 +108,22 @@ class PartitionedCIFAR10(PartitionedDataset):
             self.path.joinpath("test.pkl"),
         )
 
-    def get_dataset(self, type_: str, cid: int | None) -> Dataset:
+    def get_dataset(self, type_: FedAvgPartitionType, cid: int | None) -> Dataset:
         match type_:
-            case "train":
+            case FedAvgPartitionType.TRAIN:
                 dataset = torch.load(
                     self.path.joinpath(type_, f"{cid}.pkl"),
                     weights_only=False,
                 )
-            case "test":
+            case FedAvgPartitionType.TEST:
                 dataset = torch.load(
                     self.path.joinpath(f"{type_}.pkl"), weights_only=False
                 )
-            case _:
-                raise ValueError(f"Invalid dataset type: {type_}")
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_dataloader(
-        self, type_: str, cid: int | None, batch_size: int | None = None
+        self, type_: FedAvgPartitionType, cid: int | None, batch_size: int | None = None
     ) -> DataLoader:
         dataset = self.get_dataset(type_, cid)
         assert isinstance(dataset, Sized)

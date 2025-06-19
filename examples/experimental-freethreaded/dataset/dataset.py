@@ -1,8 +1,6 @@
 from collections.abc import Sized
-from enum import StrEnum
 from pathlib import Path
 
-import numpy as np
 import torch
 import torchvision
 from blazefl.core import PartitionedDataset
@@ -13,16 +11,11 @@ from torchvision import transforms
 from dataset.functional import (
     balance_split,
     client_inner_dirichlet_partition_faster,
+    shards_partition,
 )
 
 
-class DSFLPartitionType(StrEnum):
-    TRAIN = "train"
-    OPEN = "open"
-    TEST = "test"
-
-
-class DSFLPartitionedDataset(PartitionedDataset[DSFLPartitionType]):
+class PartitionedCIFAR10(PartitionedDataset):
     def __init__(
         self,
         root: Path,
@@ -30,16 +23,16 @@ class DSFLPartitionedDataset(PartitionedDataset[DSFLPartitionType]):
         num_clients: int,
         seed: int,
         partition: str,
-        open_size: int,
-        dir_alpha: float,
+        num_shards: int | None = None,
+        dir_alpha: float | None = None,
     ) -> None:
         self.root = root
         self.path = path
         self.num_clients = num_clients
         self.seed = seed
         self.partition = partition
+        self.num_shards = num_shards
         self.dir_alpha = dir_alpha
-        self.open_size = open_size
 
         self.train_transform = transforms.Compose(
             [
@@ -65,78 +58,44 @@ class DSFLPartitionedDataset(PartitionedDataset[DSFLPartitionType]):
             train=True,
             download=True,
         )
-        open_dataset = torchvision.datasets.CIFAR100(
-            root=self.root,
-            train=True,
-            download=True,
-        )
         test_dataset = torchvision.datasets.CIFAR10(
             root=self.root,
             train=False,
             download=True,
         )
-        for type_ in [ds.value for ds in DSFLPartitionType]:
+        for type_ in ["train", "test"]:
             self.path.joinpath(type_).mkdir(parents=True)
 
         match self.partition:
             case "client_inner_dirichlet":
-                client_dict, class_priors = client_inner_dirichlet_partition_faster(
+                assert self.dir_alpha is not None
+                client_dict = client_inner_dirichlet_partition_faster(
                     targets=train_dataset.targets,
                     num_clients=self.num_clients,
                     num_classes=10,
                     dir_alpha=self.dir_alpha,
                     client_sample_nums=balance_split(
-                        num_clients=self.num_clients,
-                        num_samples=len(train_dataset.targets),
+                        len(train_dataset.targets), self.num_clients
                     ),
-                    verbose=False,
                 )
-                test_client_dict, _ = client_inner_dirichlet_partition_faster(
-                    targets=test_dataset.targets,
+            case "shards":
+                assert self.num_shards is not None
+                client_dict = shards_partition(
+                    targets=train_dataset.targets,
                     num_clients=self.num_clients,
-                    num_classes=10,
-                    dir_alpha=self.dir_alpha,
-                    client_sample_nums=balance_split(
-                        num_clients=self.num_clients,
-                        num_samples=len(test_dataset.targets),
-                    ),
-                    class_priors=class_priors,
-                    verbose=False,
+                    num_shards=self.num_shards,
                 )
             case _:
                 raise ValueError(f"Invalid partition: {self.partition}")
 
         for cid, indices in client_dict.items():
-            client_train_dataset = FilteredDataset(
+            client_trainset = FilteredDataset(
                 indices.tolist(),
                 train_dataset.data,
                 train_dataset.targets,
                 transform=self.train_transform,
             )
-            torch.save(client_train_dataset, self.path.joinpath("train", f"{cid}.pkl"))
-
-        for cid, indices in test_client_dict.items():
-            client_test_dataset = FilteredDataset(
-                indices.tolist(),
-                test_dataset.data,
-                test_dataset.targets,
-                transform=self.test_transform,
-            )
-            torch.save(client_test_dataset, self.path.joinpath("test", f"{cid}.pkl"))
-
-        open_indices = np.random.choice(
-            len(open_dataset),
-            size=self.open_size,
-        )
-        torch.save(
-            FilteredDataset(
-                open_indices.tolist(),
-                open_dataset.data,
-                original_targets=None,
-                transform=self.train_transform,
-            ),
-            self.path.joinpath("open.pkl"),
-        )
+            torch.save(client_trainset, self.path.joinpath("train", f"{cid}.pkl"))
 
         torch.save(
             FilteredDataset(
@@ -145,36 +104,27 @@ class DSFLPartitionedDataset(PartitionedDataset[DSFLPartitionType]):
                 test_dataset.targets,
                 transform=self.test_transform,
             ),
-            self.path.joinpath("test", "default.pkl"),
+            self.path.joinpath("test.pkl"),
         )
 
-    def get_dataset(self, type_: DSFLPartitionType, cid: int | None) -> Dataset:
+    def get_dataset(self, type_: str, cid: int | None) -> Dataset:
         match type_:
-            case DSFLPartitionType.TRAIN:
+            case "train":
                 dataset = torch.load(
                     self.path.joinpath(type_, f"{cid}.pkl"),
                     weights_only=False,
                 )
-            case DSFLPartitionType.OPEN:
+            case "test":
                 dataset = torch.load(
-                    self.path.joinpath(f"{type_}.pkl"),
-                    weights_only=False,
+                    self.path.joinpath(f"{type_}.pkl"), weights_only=False
                 )
-            case DSFLPartitionType.TEST:
-                if cid is not None:
-                    dataset = torch.load(
-                        self.path.joinpath(type_, f"{cid}.pkl"),
-                        weights_only=False,
-                    )
-                else:
-                    dataset = torch.load(
-                        self.path.joinpath(type_, "default.pkl"), weights_only=False
-                    )
+            case _:
+                raise ValueError(f"Invalid dataset type: {type_}")
         assert isinstance(dataset, Dataset)
         return dataset
 
     def get_dataloader(
-        self, type_: DSFLPartitionType, cid: int | None, batch_size: int | None = None
+        self, type_: str, cid: int | None, batch_size: int | None = None
     ) -> DataLoader:
         dataset = self.get_dataset(type_, cid)
         assert isinstance(dataset, Sized)

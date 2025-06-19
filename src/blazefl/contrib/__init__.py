@@ -6,13 +6,23 @@ extending the core functionalities of BlazeFL.
 """
 
 from blazefl.contrib.fedavg import (
-    FedAvgParallelClientTrainer,
-    FedAvgSerialClientTrainer,
-    FedAvgServerHandler,
+    FedAvgBaseClientTrainer,
+    FedAvgBaseServerHandler,
+    FedAvgDownlinkPackage,
+    FedAvgPartitionedDataset,
+    FedAvgPartitionType,
+    FedAvgProcessPoolClientTrainer,
+    FedAvgThreadPoolClientTrainer,
+    FedAvgUplinkPackage,
 )
 
 __all__ = [
-    "FedAvgServerHandler",
-    "FedAvgParallelClientTrainer",
-    "FedAvgSerialClientTrainer",
+    "FedAvgBaseServerHandler",
+    "FedAvgProcessPoolClientTrainer",
+    "FedAvgBaseClientTrainer",
+    "FedAvgThreadPoolClientTrainer",
+    "FedAvgUplinkPackage",
+    "FedAvgDownlinkPackage",
+    "FedAvgPartitionType",
+    "FedAvgPartitionedDataset",
 ]

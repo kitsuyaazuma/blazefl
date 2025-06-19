@@ -14,4 +14,5 @@ dataset_root_dir: /tmp/quickstart-fedavg/dataset
 dataset_split_dir: /tmp/quickstart-fedavg/split
 share_dir: /tmp/quickstart-fedavg/share
 state_dir: /tmp/quickstart-fedavg/state
-serial: false
+execution_mode: multi-process
+ipc_mode: storage

@@ -1,18 +1,23 @@
 import random
+import threading
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 import torch
+import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from blazefl.core import (
+    BaseClientTrainer,
+    BaseServerHandler,
     ModelSelector,
-    ParallelClientTrainer,
     PartitionedDataset,
-    SerialClientTrainer,
-    ServerHandler,
+    ProcessPoolClientTrainer,
+    ThreadPoolClientTrainer,
 )
 from blazefl.utils import (
     RandomState,
@@ -53,7 +58,17 @@ class FedAvgDownlinkPackage:
     model_parameters: torch.Tensor
 
 
-class FedAvgServerHandler(ServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPackage]):
+class FedAvgPartitionType(StrEnum):
+    TRAIN = "train"
+    TEST = "test"
+
+
+FedAvgPartitionedDataset = PartitionedDataset[FedAvgPartitionType]
+
+
+class FedAvgBaseServerHandler(
+    BaseServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPackage],
+):
     """
     Server-side handler for the Federated Averaging (FedAvg) algorithm.
 
@@ -77,7 +92,7 @@ class FedAvgServerHandler(ServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPacka
         self,
         model_selector: ModelSelector,
         model_name: str,
-        dataset: PartitionedDataset,
+        dataset: FedAvgPartitionedDataset,
         global_round: int,
         num_clients: int,
         sample_ratio: float,
@@ -85,7 +100,7 @@ class FedAvgServerHandler(ServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPacka
         batch_size: int,
     ) -> None:
         """
-        Initialize the FedAvgServerHandler.
+        Initialize the FedAvgBaseServerHandler.
 
         Args:
             model_selector (ModelSelector): Selector for initializing the model.
@@ -232,10 +247,10 @@ class FedAvgServerHandler(ServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPacka
         return avg_loss, avg_acc
 
     def get_summary(self) -> dict[str, float]:
-        server_loss, server_acc = FedAvgServerHandler.evaluate(
+        server_loss, server_acc = FedAvgBaseServerHandler.evaluate(
             self.model,
             self.dataset.get_dataloader(
-                type_="test",
+                type_=FedAvgPartitionType.TEST,
                 cid=None,
                 batch_size=self.batch_size,
             ),
@@ -258,11 +273,11 @@ class FedAvgServerHandler(ServerHandler[FedAvgUplinkPackage, FedAvgDownlinkPacka
         return FedAvgDownlinkPackage(model_parameters)
 
 
-class FedAvgSerialClientTrainer(
-    SerialClientTrainer[FedAvgUplinkPackage, FedAvgDownlinkPackage]
+class FedAvgBaseClientTrainer(
+    BaseClientTrainer[FedAvgUplinkPackage, FedAvgDownlinkPackage]
 ):
     """
-    Serial client trainer for the Federated Averaging (FedAvg) algorithm.
+    Base client trainer for the Federated Averaging (FedAvg) algorithm.
 
     This trainer processes clients sequentially, training and evaluating a local model
     for each client based on the server-provided model parameters.
@@ -283,7 +298,7 @@ class FedAvgSerialClientTrainer(
         self,
         model_selector: ModelSelector,
         model_name: str,
-        dataset: PartitionedDataset,
+        dataset: FedAvgPartitionedDataset,
         device: str,
         num_clients: int,
         epochs: int,
@@ -291,7 +306,7 @@ class FedAvgSerialClientTrainer(
         lr: float,
     ) -> None:
         """
-        Initialize the FedAvgSerialClientTrainer.
+        Initialize the FedAvgBaseClientTrainer.
 
         Args:
             model_selector (ModelSelector): Selector for initializing the local model.
@@ -333,14 +348,9 @@ class FedAvgSerialClientTrainer(
         model_parameters = payload.model_parameters
         for cid in tqdm(cid_list, desc="Client", leave=False):
             data_loader = self.dataset.get_dataloader(
-                type_="train", cid=cid, batch_size=self.batch_size
+                type_=FedAvgPartitionType.TRAIN, cid=cid, batch_size=self.batch_size
             )
             pack = self.train(model_parameters, data_loader)
-            val_loader = self.dataset.get_dataloader(
-                type_="val", cid=cid, batch_size=self.batch_size
-            )
-            loss, acc = self.evaluate(val_loader)
-            pack.metadata = {"loss": loss, "acc": acc}
             self.cache.append(pack)
 
     def train(
@@ -429,7 +439,7 @@ class FedAvgSerialClientTrainer(
 
 
 @dataclass
-class FedAvgDiskSharedData:
+class FedAvgClientConfig:
     """
     Data structure representing shared data for parallel client training
     in the Federated Averaging (FedAvg) algorithm.
@@ -446,25 +456,23 @@ class FedAvgDiskSharedData:
         lr (float): Learning rate for the optimizer.
         cid (int): Client ID.
         seed (int): Seed for reproducibility.
-        payload (FedAvgDownlinkPackage): Downlink package with global model parameters.
         state_path (Path): Path to save the client's random state.
     """
 
     model_selector: ModelSelector
     model_name: str
-    dataset: PartitionedDataset
+    dataset: FedAvgPartitionedDataset
     epochs: int
     batch_size: int
     lr: float
     cid: int
     seed: int
-    payload: FedAvgDownlinkPackage
     state_path: Path
 
 
-class FedAvgParallelClientTrainer(
-    ParallelClientTrainer[
-        FedAvgUplinkPackage, FedAvgDownlinkPackage, FedAvgDiskSharedData
+class FedAvgProcessPoolClientTrainer(
+    ProcessPoolClientTrainer[
+        FedAvgUplinkPackage, FedAvgDownlinkPackage, FedAvgClientConfig
     ]
 ):
     """
@@ -486,6 +494,8 @@ class FedAvgParallelClientTrainer(
         lr (float): Learning rate for the optimizer.
         seed (int): Seed for reproducibility.
         num_parallels (int): Number of parallel processes for training.
+        ipc_mode (Literal["storage", "shared_memory"]):
+            Inter-process communication mode.
         device_count (int | None): Number of CUDA devices available (if using GPU).
     """
 
@@ -495,7 +505,7 @@ class FedAvgParallelClientTrainer(
         model_name: str,
         share_dir: Path,
         state_dir: Path,
-        dataset: PartitionedDataset,
+        dataset: FedAvgPartitionedDataset,
         device: str,
         num_clients: int,
         epochs: int,
@@ -503,6 +513,7 @@ class FedAvgParallelClientTrainer(
         lr: float,
         seed: int,
         num_parallels: int,
+        ipc_mode: Literal["storage", "shared_memory"],
     ) -> None:
         """
         Initialize the FedAvgParalleClientTrainer.
@@ -521,7 +532,14 @@ class FedAvgParallelClientTrainer(
             seed (int): Seed for reproducibility.
             num_parallels (int): Number of parallel processes for training.
         """
-        super().__init__(num_parallels, share_dir, device)
+        self.num_parallels = num_parallels
+        self.share_dir = share_dir
+        self.share_dir.mkdir(parents=True, exist_ok=True)
+        self.device = device
+        if self.device == "cuda":
+            self.device_count = torch.cuda.device_count()
+        self.cache = []
+
         self.model_selector = model_selector
         self.model_name = model_name
         self.state_dir = state_dir
@@ -533,50 +551,100 @@ class FedAvgParallelClientTrainer(
         self.device = device
         self.num_clients = num_clients
         self.seed = seed
+        self.ipc_mode = ipc_mode
+        self.manager = mp.Manager()
+        self.stop_event = self.manager.Event()
 
     @staticmethod
-    def process_client(path: Path, device: str) -> Path:
+    def worker(
+        config: FedAvgClientConfig | Path,
+        payload: FedAvgDownlinkPackage | Path,
+        device: str,
+        stop_event: threading.Event,
+    ) -> FedAvgUplinkPackage | Path:
         """
         Process a single client's local training and evaluation.
 
-        This method is executed by a parallel process and handles data loading,
-        training, evaluation, and saving results to a shared file.
+        This method is executed by a worker process and handles loading client
+        configuration and payload, performing the client-specific training,
+        and returning the result.
 
         Args:
-            path (Path): Path to the shared data file containing client-specific
-            information.
-            device (str): Device to use for processing.
+            config (FedAvgClientConfig | Path):
+                The client's configuration data, or a path to a file containing
+                the configuration if `ipc_mode` is "storage".
+            payload (FedAvgDownlinkPackage | Path):
+                The downlink payload from the server, or a path to a file
+                containing the payload if `ipc_mode` is "storage".
+            device (str): Device to use for processing (e.g., "cpu", "cuda:0").
 
         Returns:
-            Path: Path to the file with the processed results.
+            FedAvgUplinkPackage | Path:
+                The uplink package containing the client's results, or a path to
+                a file containing the package if `ipc_mode` is "storage".
         """
-        data = torch.load(path, weights_only=False)
-        assert isinstance(data, FedAvgDiskSharedData)
 
-        if data.state_path.exists():
-            state = torch.load(data.state_path, weights_only=False)
-            assert isinstance(state, RandomState)
-            RandomState.set_random_state(state)
+        def _storage_worker(
+            config_path: Path,
+            payload_path: Path,
+            device: str,
+            stop_event: threading.Event,
+        ) -> Path:
+            config = torch.load(config_path, weights_only=False)
+            assert isinstance(config, FedAvgClientConfig)
+            payload = torch.load(payload_path, weights_only=False)
+            assert isinstance(payload, FedAvgDownlinkPackage)
+            package = _shared_memory_worker(
+                config=config,
+                payload=payload,
+                device=device,
+                stop_event=stop_event,
+            )
+            torch.save(package, config_path)
+            return config_path
+
+        def _shared_memory_worker(
+            config: FedAvgClientConfig,
+            payload: FedAvgDownlinkPackage,
+            device: str,
+            stop_event: threading.Event,
+        ) -> FedAvgUplinkPackage:
+            if config.state_path.exists():
+                state = torch.load(config.state_path, weights_only=False)
+                assert isinstance(state, RandomState)
+                RandomState.set_random_state(state)
+            else:
+                seed_everything(config.seed, device=device)
+
+            model = config.model_selector.select_model(config.model_name)
+            train_loader = config.dataset.get_dataloader(
+                type_=FedAvgPartitionType.TRAIN,
+                cid=config.cid,
+                batch_size=config.batch_size,
+            )
+            package = FedAvgProcessPoolClientTrainer.train(
+                model=model,
+                model_parameters=payload.model_parameters,
+                train_loader=train_loader,
+                device=device,
+                epochs=config.epochs,
+                lr=config.lr,
+                stop_event=stop_event,
+            )
+            torch.save(RandomState.get_random_state(device=device), config.state_path)
+            return package
+
+        if isinstance(config, Path) and isinstance(payload, Path):
+            return _storage_worker(config, payload, device, stop_event)
+        elif isinstance(config, FedAvgClientConfig) and isinstance(
+            payload, FedAvgDownlinkPackage
+        ):
+            return _shared_memory_worker(config, payload, device, stop_event)
         else:
-            seed_everything(data.seed, device=device)
-
-        model = data.model_selector.select_model(data.model_name)
-        train_loader = data.dataset.get_dataloader(
-            type_="train",
-            cid=data.cid,
-            batch_size=data.batch_size,
-        )
-        package = FedAvgParallelClientTrainer.train(
-            model=model,
-            model_parameters=data.payload.model_parameters,
-            train_loader=train_loader,
-            device=device,
-            epochs=data.epochs,
-            lr=data.lr,
-        )
-        torch.save(package, path)
-        torch.save(RandomState.get_random_state(device=device), data.state_path)
-        return path
+            raise TypeError(
+                "Invalid types for config and payload."
+                " Expected FedAvgClientConfig and FedAvgDownlinkPackage or Path."
+            )
 
     @staticmethod
     def train(
@@ -586,6 +654,7 @@ class FedAvgParallelClientTrainer(
         device: str,
         epochs: int,
         lr: float,
+        stop_event: threading.Event,
     ) -> FedAvgUplinkPackage:
         """
         Train the model with the given training data loader.
@@ -610,6 +679,8 @@ class FedAvgParallelClientTrainer(
 
         data_size = 0
         for _ in range(epochs):
+            if stop_event.is_set():
+                break
             for data, target in train_loader:
                 data = data.to(device)
                 target = target.to(device)
@@ -627,21 +698,17 @@ class FedAvgParallelClientTrainer(
 
         return FedAvgUplinkPackage(model_parameters, data_size)
 
-    def get_shared_data(
-        self, cid: int, payload: FedAvgDownlinkPackage
-    ) -> FedAvgDiskSharedData:
+    def get_client_config(self, cid: int) -> FedAvgClientConfig:
         """
-        Generate the shared data for a specific client.
+        Generate the client configuration for a specific client.
 
         Args:
             cid (int): Client ID.
-            payload (FedAvgDownlinkPackage): Downlink package with global model
-            parameters.
 
         Returns:
-            FedAvgDiskSharedData: Shared data structure for the client.
+            FedAvgClientConfig: Client configuration data structure.
         """
-        data = FedAvgDiskSharedData(
+        data = FedAvgClientConfig(
             model_selector=self.model_selector,
             model_name=self.model_name,
             dataset=self.dataset,
@@ -650,7 +717,6 @@ class FedAvgParallelClientTrainer(
             lr=self.lr,
             cid=cid,
             seed=self.seed,
-            payload=payload,
             state_path=self.state_dir.joinpath(f"{cid}.pt"),
         )
         return data
@@ -662,6 +728,123 @@ class FedAvgParallelClientTrainer(
         Returns:
             list[FedAvgUplinkPackage]: A list of uplink packages.
         """
+        package = deepcopy(self.cache)
+        self.cache = []
+        return package
+
+
+class FedAvgThreadPoolClientTrainer(
+    ThreadPoolClientTrainer[
+        FedAvgUplinkPackage,
+        FedAvgDownlinkPackage,
+    ]
+):
+    def __init__(
+        self,
+        model_selector: ModelSelector,
+        model_name: str,
+        dataset: FedAvgPartitionedDataset,
+        device: str,
+        num_clients: int,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        seed: int,
+        num_parallels: int,
+    ) -> None:
+        self.num_parallels = num_parallels
+        self.device = device
+        if self.device == "cuda":
+            self.device_count = torch.cuda.device_count()
+        self.cache: list[FedAvgUplinkPackage] = []
+
+        self.model_selector = model_selector
+        self.model_name = model_name
+        self.dataset = dataset
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.lr = lr
+        self.num_clients = num_clients
+        self.seed = seed
+        self.stop_event = threading.Event()
+
+    def worker(
+        self,
+        cid: int,
+        device: str,
+        payload: FedAvgDownlinkPackage,
+        stop_event: threading.Event,
+    ) -> FedAvgUplinkPackage:
+        model = self.model_selector.select_model(self.model_name)
+        train_loader = self.dataset.get_dataloader(
+            type_=FedAvgPartitionType.TRAIN,
+            cid=cid,
+            batch_size=self.batch_size,
+        )
+        package = self.train(
+            model=model,
+            model_parameters=payload.model_parameters,
+            train_loader=train_loader,
+            device=device,
+            epochs=self.epochs,
+            lr=self.lr,
+            stop_event=stop_event,
+        )
+        return package
+
+    def train(
+        self,
+        model: torch.nn.Module,
+        model_parameters: torch.Tensor,
+        train_loader: DataLoader,
+        device: str,
+        epochs: int,
+        lr: float,
+        stop_event: threading.Event,
+    ) -> FedAvgUplinkPackage:
+        """
+        Train the model with the given training data loader.
+
+        Args:
+            model (torch.nn.Module): The model to train.
+            model_parameters (torch.Tensor): Initial global model parameters.
+            train_loader (DataLoader): DataLoader for the training data.
+            device (str): Device to run the training on.
+            epochs (int): Number of local training epochs.
+            lr (float): Learning rate for the optimizer.
+
+        Returns:
+            FedAvgUplinkPackage: Uplink package containing updated model parameters
+            and data size.
+        """
+        model.to(device)
+        deserialize_model(model, model_parameters)
+        model.train()
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+        criterion = torch.nn.CrossEntropyLoss()
+
+        data_size = 0
+        for _ in range(epochs):
+            if stop_event.is_set():
+                break
+            for data, target in train_loader:
+                data = data.to(device)
+                target = target.to(device)
+
+                output = model(data)
+                loss = criterion(output, target)
+
+                data_size += len(target)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+        model_parameters = serialize_model(model)
+
+        return FedAvgUplinkPackage(model_parameters, data_size)
+
+    def uplink_package(self) -> list[FedAvgUplinkPackage]:
         package = deepcopy(self.cache)
         self.cache = []
         return package

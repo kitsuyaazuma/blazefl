@@ -36,4 +36,5 @@ blazefl = { workspace = true }
 [dependency-groups]
 dev = [
     "mypy>=1.13.0",
+    "pre-commit>=4.2.0",
 ]

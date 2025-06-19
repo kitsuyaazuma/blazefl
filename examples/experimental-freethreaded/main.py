@@ -9,12 +9,12 @@ from blazefl.contrib import (
     FedAvgBaseClientTrainer,
     FedAvgBaseServerHandler,
     FedAvgProcessPoolClientTrainer,
+)
+from blazefl.contrib.fedavg import (
     FedAvgThreadPoolClientTrainer,
 )
 from blazefl.utils import seed_everything
-from hydra.core import hydra_config
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import PartitionedCIFAR10
 from models import FedAvgModelSelector
@@ -27,11 +27,9 @@ class FedAvgPipeline:
         trainer: FedAvgBaseClientTrainer
         | FedAvgProcessPoolClientTrainer
         | FedAvgThreadPoolClientTrainer,
-        writer: SummaryWriter,
     ) -> None:
         self.handler = handler
         self.trainer = trainer
-        self.writer = writer
 
     def main(self):
         while not self.handler.if_stop():
@@ -49,8 +47,6 @@ class FedAvgPipeline:
                 self.handler.load(pack)
 
             summary = self.handler.get_summary()
-            for key, value in summary.items():
-                self.writer.add_scalar(key, value, round_)
             formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
             logging.info(f"round: {round_}, {formatted_summary}")
 
@@ -60,9 +56,6 @@ class FedAvgPipeline:
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
-
-    log_dir = hydra_config.HydraConfig.get().runtime.output_dir
-    writer = SummaryWriter(log_dir=log_dir)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_root_dir = Path(cfg.dataset_root_dir)
@@ -107,6 +100,17 @@ def main(cfg: DictConfig):
         | None
     ) = None
     match cfg.execution_mode:
+        case "single-thread":
+            trainer = FedAvgBaseClientTrainer(
+                model_selector=model_selector,
+                model_name=cfg.model_name,
+                dataset=dataset,
+                device=device,
+                num_clients=cfg.num_clients,
+                epochs=cfg.epochs,
+                lr=cfg.lr,
+                batch_size=cfg.batch_size,
+            )
         case "multi-process":
             trainer = FedAvgProcessPoolClientTrainer(
                 model_selector=model_selector,
@@ -123,33 +127,22 @@ def main(cfg: DictConfig):
                 num_parallels=cfg.num_parallels,
                 ipc_mode=cfg.ipc_mode,
             )
-        case "single-thread":
-            trainer = FedAvgBaseClientTrainer(
-                model_selector=model_selector,
-                model_name=cfg.model_name,
-                dataset=dataset,
-                device=device,
-                num_clients=cfg.num_clients,
-                epochs=cfg.epochs,
-                lr=cfg.lr,
-                batch_size=cfg.batch_size,
-            )
         case "multi-thread":
             trainer = FedAvgThreadPoolClientTrainer(
                 model_selector=model_selector,
                 model_name=cfg.model_name,
                 dataset=dataset,
-                seed=cfg.seed,
                 device=device,
                 num_clients=cfg.num_clients,
                 epochs=cfg.epochs,
                 lr=cfg.lr,
                 batch_size=cfg.batch_size,
                 num_parallels=cfg.num_parallels,
+                seed=cfg.seed,
             )
         case _:
             raise ValueError(f"Invalid execution mode: {cfg.execution_mode}")
-    pipeline = FedAvgPipeline(handler=handler, trainer=trainer, writer=writer)
+    pipeline = FedAvgPipeline(handler=handler, trainer=trainer)
     try:
         pipeline.main()
     except KeyboardInterrupt:

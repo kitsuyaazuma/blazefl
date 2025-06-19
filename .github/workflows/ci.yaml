@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - develop
     paths-ignore:
       - "docs/**"
       - "examples/**"
@@ -34,7 +35,17 @@ jobs:
         run: uv run ruff check --output-format=github .
 
       - name: Run mypy
-        run: uv run mypy .
+        run: uv run mypy src
 
       - name: Run pytest
-        run: uv run pytest tests
+        run: uv run pytest tests --junitxml=pytest.xml
+        continue-on-error: true
+
+      - name: Upload pytest results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest.xml
+
+

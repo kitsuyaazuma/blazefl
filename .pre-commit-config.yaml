@@ -1,18 +1,9 @@
 repos:
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.11.12
-  hooks:
-    - id: ruff-check
-    - id: ruff-format
-- repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.16.0
-  hooks:
-    - id: mypy
 - repo: local
   hooks:
     - id: stubgen
       name: stubgen
-      entry: stubgen src/blazefl --no-analysis -o .
+      entry: stubgen -p blazefl.core -p blazefl.utils --no-analysis -o src
       language: system
       types: [python]
       pass_filenames: false

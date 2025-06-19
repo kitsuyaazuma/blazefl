@@ -10,7 +10,7 @@ from hydra.core import hydra_config
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from algorithm import DSFLParallelClientTrainer, DSFLServerHandler
+from algorithm import DSFLBaseServerHandler, DSFLProcessPoolClientTrainer
 from dataset import DSFLPartitionedDataset
 from models import DSFLModelSelector
 
@@ -18,8 +18,8 @@ from models import DSFLModelSelector
 class DSFLPipeline:
     def __init__(
         self,
-        handler: DSFLServerHandler,
-        trainer: DSFLParallelClientTrainer,
+        handler: DSFLBaseServerHandler,
+        trainer: DSFLProcessPoolClientTrainer,
         writer: SummaryWriter,
     ) -> None:
         self.handler = handler
@@ -82,7 +82,7 @@ def main(
 
     match cfg.algorithm.name:
         case "dsfl":
-            handler = DSFLServerHandler(
+            handler = DSFLBaseServerHandler(
                 model_selector=model_selector,
                 model_name=cfg.model_name,
                 dataset=dataset,
@@ -96,7 +96,7 @@ def main(
                 device=device,
                 sample_ratio=cfg.sample_ratio,
             )
-            trainer = DSFLParallelClientTrainer(
+            trainer = DSFLProcessPoolClientTrainer(
                 model_selector=model_selector,
                 model_name=cfg.model_name,
                 dataset=dataset,
@@ -120,9 +120,7 @@ def main(
     try:
         pipeline.main()
     except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt: Stopping the pipeline.")
-    except Exception as e:
-        logging.exception(f"An error occurred: {e}")
+        logging.info("KeyboardInterrupt")
 
 
 if __name__ == "__main__":

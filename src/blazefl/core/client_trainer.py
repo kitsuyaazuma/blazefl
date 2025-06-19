@@ -1,18 +1,21 @@
-import multiprocessing as mp
 import signal
-from abc import ABC, abstractmethod
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing.pool import ApplyResult
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 import torch
+import torch.multiprocessing as mp
 from tqdm import tqdm
 
+from blazefl.utils import move_tensor_to_shared_memory
+
 UplinkPackage = TypeVar("UplinkPackage")
-DownlinkPackage = TypeVar("DownlinkPackage")
+DownlinkPackage = TypeVar("DownlinkPackage", contravariant=True)
 
 
-class SerialClientTrainer(ABC, Generic[UplinkPackage, DownlinkPackage]):
+class BaseClientTrainer(Protocol[UplinkPackage, DownlinkPackage]):
     """
     Abstract base class for serial client training in federated learning.
 
@@ -23,7 +26,6 @@ class SerialClientTrainer(ABC, Generic[UplinkPackage, DownlinkPackage]):
         NotImplementedError: If the methods are not implemented in a subclass.
     """
 
-    @abstractmethod
     def uplink_package(self) -> list[UplinkPackage]:
         """
         Prepare the data package to be sent from the client to the server.
@@ -34,7 +36,6 @@ class SerialClientTrainer(ABC, Generic[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    @abstractmethod
     def local_process(self, payload: DownlinkPackage, cid_list: list[int]) -> None:
         """
         Process the downlink payload from the server for a list of client IDs.
@@ -49,12 +50,12 @@ class SerialClientTrainer(ABC, Generic[UplinkPackage, DownlinkPackage]):
         ...
 
 
-DiskSharedData = TypeVar("DiskSharedData")
+ClientConfig = TypeVar("ClientConfig")
 
 
-class ParallelClientTrainer(
-    SerialClientTrainer[UplinkPackage, DownlinkPackage],
-    Generic[UplinkPackage, DownlinkPackage, DiskSharedData],
+class ProcessPoolClientTrainer(
+    BaseClientTrainer[UplinkPackage, DownlinkPackage],
+    Protocol[UplinkPackage, DownlinkPackage, ClientConfig],
 ):
     """
     Abstract base class for parallel client training in federated learning.
@@ -65,40 +66,34 @@ class ParallelClientTrainer(
     Attributes:
         num_parallels (int): Number of parallel processes to use for client training.
         share_dir (Path): Directory path for sharing data between processes.
+        device (str): The primary device to use for computation (e.g., "cpu", "cuda").
+        device_count (int): The number of available CUDA devices, if `device` is "cuda".
         cache (list[UplinkPackage]): Cache to store uplink packages from clients.
+        ipc_mode (Literal["storage", "shared_memory"]): Inter-process communication
+            mode. "storage" uses disk for data exchange, "shared_memory" uses
+            shared memory for tensor data. Defaults to "storage".
 
     Raises:
         NotImplementedError: If the abstract methods are not implemented in a subclass.
     """
 
-    def __init__(self, num_parallels: int, share_dir: Path, device: str) -> None:
-        """
-        Initialize the ParallelClientTrainer with parallelism settings.
+    num_parallels: int
+    share_dir: Path
+    device: str
+    device_count: int
+    cache: list[UplinkPackage]
+    ipc_mode: Literal["storage", "shared_memory"] = "storage"
+    stop_event: threading.Event
 
-        Args:
-            num_parallels (int): Number of parallel processes to use.
-            share_dir (Path): Directory path for sharing data between processes.
-            device (str): Device to use for processing clients.
+    def get_client_config(self, cid: int) -> ClientConfig:
         """
-        self.num_parallels = num_parallels
-        self.share_dir = share_dir
-        self.share_dir.mkdir(parents=True, exist_ok=True)
-        self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
-        self.cache: list[UplinkPackage] = []
-
-    @abstractmethod
-    def get_shared_data(self, cid: int, payload: DownlinkPackage) -> DiskSharedData:
-        """
-        Retrieve shared data for a given client ID and payload.
+        Retrieve the configuration for a given client ID.
 
         Args:
             cid (int): Client ID.
-            payload (DownlinkPackage): The data package received from the server.
 
         Returns:
-            DiskSharedData: The shared data associated with the client ID and payload.
+            ClientConfig: The configuration for the specified client.
         """
         ...
 
@@ -117,17 +112,32 @@ class ParallelClientTrainer(
         return self.device
 
     @staticmethod
-    @abstractmethod
-    def process_client(path: Path, device: str) -> Path:
+    def worker(
+        config: ClientConfig | Path,
+        payload: DownlinkPackage | Path,
+        device: str,
+        stop_event: threading.Event,
+    ) -> UplinkPackage | Path:
         """
-        Process a single client based on the provided path.
+        Process a single client's training task.
+
+        This method is executed by each worker process in the pool.
+        It handles loading client configuration and payload, performing
+        the client-specific operations, and returning the result.
 
         Args:
-            path (Path): Path to the client's data file.
-            device (str): Device to use for processing.
+            config (ClientConfig | Path):
+                The client's configuration data, or a path to a file containing
+                the configuration if `ipc_mode` is "storage".
+            payload (DownlinkPackage | Path):
+                The downlink payload from the server, or a path to a file
+                containing the payload if `ipc_mode` is "storage".
+            device (str): Device to use for processing (e.g., "cpu", "cuda:0").
 
         Returns:
-            Path: Path to the processed client's data file.
+            UplinkPackage | Path:
+                The uplink package containing the client's results, or a path
+                to a file containing the package if `ipc_mode` is "storage".
         """
         ...
 
@@ -145,21 +155,114 @@ class ParallelClientTrainer(
         Returns:
             None
         """
-        with mp.Pool(
+        payload_path = Path()
+        if self.ipc_mode == "storage":
+            payload_path = self.share_dir.joinpath("payload.pkl")
+            torch.save(payload, payload_path)
+        else:  # shared_memory
+            move_tensor_to_shared_memory(payload)
+
+        self.stop_event.clear()
+        pool = mp.Pool(
             processes=self.num_parallels,
             initializer=signal.signal,
             initargs=(signal.SIGINT, signal.SIG_IGN),
-        ) as pool:
+        )
+        try:
             jobs: list[ApplyResult] = []
             for cid in cid_list:
-                path = self.share_dir.joinpath(f"{cid}.pkl")
-                data = self.get_shared_data(cid, payload)
+                config = self.get_client_config(cid)
                 device = self.get_client_device(cid)
-                torch.save(data, path)
-                jobs.append(pool.apply_async(self.process_client, (path, device)))
+                if self.ipc_mode == "storage":
+                    config_path = self.share_dir.joinpath(f"{cid}.pkl")
+                    torch.save(config, config_path)
+                    jobs.append(
+                        pool.apply_async(
+                            self.worker,
+                            (config_path, payload_path, device, self.stop_event),
+                        )
+                    )
+                else:  # shared_memory
+                    jobs.append(
+                        pool.apply_async(
+                            self.worker, (config, payload, device, self.stop_event)
+                        )
+                    )
 
             for job in tqdm(jobs, desc="Client", leave=False):
-                path = job.get()
-                assert isinstance(path, Path)
-                package = torch.load(path, weights_only=False)
+                result = job.get()
+                if self.ipc_mode == "storage":
+                    assert isinstance(result, Path)
+                    package = torch.load(result, weights_only=False)
+                else:  # shared_memory
+                    package = result
                 self.cache.append(package)
+        finally:
+            self.stop_event.set()
+            pool.close()
+            pool.join()
+
+
+class ThreadPoolClientTrainer(
+    BaseClientTrainer[UplinkPackage, DownlinkPackage],
+    Protocol[UplinkPackage, DownlinkPackage],
+):
+    num_parallels: int
+    device: str
+    device_count: int
+    cache: list[UplinkPackage]
+    stop_event: threading.Event
+
+    def worker(
+        self,
+        cid: int,
+        device: str,
+        payload: DownlinkPackage,
+        stop_event: threading.Event,
+    ) -> UplinkPackage:
+        """
+        Process a single client's training task in a thread.
+
+        Args:
+            cid (int): The client ID.
+            device (str): The device to use for processing this client.
+            payload (DownlinkPackage): The data package received from the server.
+            stop_event (threading.Event): Event to signal stopping the worker.
+
+        Returns:
+            UplinkPackage: The uplink package containing the client's results.
+        """
+        ...
+
+    def get_client_device(self, cid: int) -> str:
+        if self.device == "cuda":
+            return f"cuda:{cid % self.device_count}"
+        return self.device
+
+    def local_process(self, payload: DownlinkPackage, cid_list: list[int]) -> None:
+        self.stop_event.clear()
+        executor = ThreadPoolExecutor(max_workers=self.num_parallels)
+        try:
+            futures = []
+            for cid in cid_list:
+                device = self.get_client_device(cid)
+                future = executor.submit(
+                    self.worker,
+                    cid,
+                    device,
+                    payload,
+                    self.stop_event,
+                )
+                futures.append(future)
+
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Client",
+                leave=False,
+            ):
+                result = future.result()
+                self.cache.append(result)
+        finally:
+            self.stop_event.set()
+            executor.shutdown(wait=True, cancel_futures=True)

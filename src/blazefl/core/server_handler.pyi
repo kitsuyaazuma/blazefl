@@ -1,17 +1,11 @@
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Protocol, TypeVar
 
 UplinkPackage = TypeVar('UplinkPackage')
-DownlinkPackage = TypeVar('DownlinkPackage')
+DownlinkPackage = TypeVar('DownlinkPackage', covariant=True)
 
-class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
-    @abstractmethod
+class BaseServerHandler(Protocol[UplinkPackage, DownlinkPackage]):
     def downlink_package(self) -> DownlinkPackage: ...
-    @abstractmethod
     def sample_clients(self) -> list[int]: ...
-    @abstractmethod
     def if_stop(self) -> bool: ...
-    @abstractmethod
     def global_update(self, buffer: list[UplinkPackage]) -> None: ...
-    @abstractmethod
     def load(self, payload: UplinkPackage) -> bool: ...

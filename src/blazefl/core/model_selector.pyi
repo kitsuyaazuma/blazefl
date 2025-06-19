@@ -1,6 +1,5 @@
 import torch
-from abc import ABC, abstractmethod
+from typing import Protocol
 
-class ModelSelector(ABC):
-    @abstractmethod
+class ModelSelector(Protocol):
     def select_model(self, model_name: str) -> torch.nn.Module: ...

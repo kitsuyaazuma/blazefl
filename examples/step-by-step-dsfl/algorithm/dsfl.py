@@ -1,14 +1,16 @@
 import random
+import threading
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 from blazefl.core import (
-    ParallelClientTrainer,
-    ServerHandler,
+    BaseServerHandler,
+    ProcessPoolClientTrainer,
 )
 from blazefl.utils import (
     FilteredDataset,
@@ -17,7 +19,7 @@ from blazefl.utils import (
 )
 from torch.utils.data import DataLoader, Subset
 
-from dataset import DSFLPartitionedDataset
+from dataset import DSFLPartitionedDataset, DSFLPartitionType
 from models import DSFLModelSelector
 
 
@@ -35,7 +37,7 @@ class DSFLDownlinkPackage:
     next_indices: torch.Tensor
 
 
-class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
+class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
     def __init__(
         self,
         model_selector: DSFLModelSelector,
@@ -116,7 +118,7 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             era_soft_labels = F.softmax(mean_soft_labels / self.era_temperature, dim=0)
             global_soft_labels.append(era_soft_labels)
 
-        DSFLServerHandler.distill(
+        DSFLBaseServerHandler.distill(
             self.model,
             self.kd_optimizer,
             self.dataset,
@@ -125,6 +127,7 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             self.kd_epochs,
             self.kd_batch_size,
             self.device,
+            stop_event=None,
         )
 
         self.global_soft_labels = torch.stack(global_soft_labels)
@@ -140,10 +143,11 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         kd_epochs: int,
         kd_batch_size: int,
         device: str,
+        stop_event: threading.Event | None,
     ) -> None:
         model.to(device)
         model.train()
-        open_dataset = dataset.get_dataset(type_="open", cid=None)
+        open_dataset = dataset.get_dataset(type_=DSFLPartitionType.OPEN, cid=None)
         open_loader = DataLoader(
             Subset(open_dataset, global_indices),
             batch_size=kd_batch_size,
@@ -156,6 +160,8 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
             batch_size=kd_batch_size,
         )
         for _ in range(kd_epochs):
+            if stop_event is not None and stop_event.is_set():
+                break
             for data, soft_label in zip(
                 open_loader, global_soft_label_loader, strict=True
             ):
@@ -205,10 +211,10 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
         return avg_loss, avg_acc
 
     def get_summary(self) -> dict[str, float]:
-        server_loss, server_acc = DSFLServerHandler.evaulate(
+        server_loss, server_acc = DSFLBaseServerHandler.evaulate(
             self.model,
             self.dataset.get_dataloader(
-                type_="test",
+                type_=DSFLPartitionType.TEST,
                 cid=None,
                 batch_size=self.kd_batch_size,
             ),
@@ -233,7 +239,7 @@ class DSFLServerHandler(ServerHandler[DSFLUplinkPackage, DSFLDownlinkPackage]):
 
 
 @dataclass
-class DSFLDiskSharedData:
+class DSFLClientConfig:
     model_selector: DSFLModelSelector
     model_name: str
     dataset: DSFLPartitionedDataset
@@ -245,7 +251,6 @@ class DSFLDiskSharedData:
     kd_lr: float
     cid: int
     seed: int
-    payload: DSFLDownlinkPackage
     state_path: Path
 
 
@@ -257,8 +262,8 @@ class DSFLClientState:
     kd_optimizer: dict[str, torch.Tensor] | None
 
 
-class DSFLParallelClientTrainer(
-    ParallelClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLDiskSharedData]
+class DSFLProcessPoolClientTrainer(
+    ProcessPoolClientTrainer[DSFLUplinkPackage, DSFLDownlinkPackage, DSFLClientConfig]
 ):
     def __init__(
         self,
@@ -278,7 +283,14 @@ class DSFLParallelClientTrainer(
         seed: int,
         num_parallels: int,
     ) -> None:
-        super().__init__(num_parallels, share_dir, device)
+        self.num_parallels = num_parallels
+        self.share_dir = share_dir
+        self.share_dir.mkdir(parents=True, exist_ok=True)
+        self.device = device
+        if self.device == "cuda":
+            self.device_count = torch.cuda.device_count()
+        self.cache: list[DSFLUplinkPackage] = []
+
         self.model_selector = model_selector
         self.model_name = model_name
         self.state_dir = state_dir
@@ -293,82 +305,95 @@ class DSFLParallelClientTrainer(
         self.device = device
         self.num_clients = num_clients
         self.seed = seed
+        self.ipc_mode = "storage"
+        self.manager = mp.Manager()
+        self.stop_event = self.manager.Event()
 
         if self.device == "cuda":
             self.device_count = torch.cuda.device_count()
 
     @staticmethod
-    def process_client(path: Path, device: str) -> Path:
-        data = torch.load(path, weights_only=False)
-        assert isinstance(data, DSFLDiskSharedData)
+    def worker(
+        config: DSFLClientConfig | Path,
+        payload: DSFLDownlinkPackage | Path,
+        device: str,
+        stop_event: threading.Event,
+    ) -> Path:
+        assert isinstance(config, Path) and isinstance(payload, Path)
+        config_path, payload_path = config, payload
+        c = torch.load(config_path, weights_only=False)
+        p = torch.load(payload_path, weights_only=False)
+        assert isinstance(c, DSFLClientConfig) and isinstance(p, DSFLDownlinkPackage)
 
-        model = data.model_selector.select_model(data.model_name)
-        optimizer = torch.optim.SGD(model.parameters(), lr=data.lr)
+        model = c.model_selector.select_model(c.model_name)
+        optimizer = torch.optim.SGD(model.parameters(), lr=c.lr)
         kd_optimizer: torch.optim.SGD | None = None
 
         state: DSFLClientState | None = None
-        if data.state_path.exists():
-            state = torch.load(data.state_path, weights_only=False)
+        if c.state_path.exists():
+            state = torch.load(c.state_path, weights_only=False)
             assert isinstance(state, DSFLClientState)
             RandomState.set_random_state(state.random)
             model.load_state_dict(state.model)
             optimizer.load_state_dict(state.optimizer)
             if state.kd_optimizer is not None:
-                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=c.kd_lr)
                 kd_optimizer.load_state_dict(state.kd_optimizer)
         else:
-            seed_everything(data.seed, device=device)
+            seed_everything(c.seed, device=device)
 
         # Distill
-        open_dataset = data.dataset.get_dataset(type_="open", cid=None)
-        if data.payload.indices is not None and data.payload.soft_labels is not None:
-            global_soft_labels = list(torch.unbind(data.payload.soft_labels, dim=0))
-            global_indices = data.payload.indices.tolist()
+        open_dataset = c.dataset.get_dataset(type_=DSFLPartitionType.OPEN, cid=None)
+        if p.indices is not None and p.soft_labels is not None:
+            global_soft_labels = list(torch.unbind(p.soft_labels, dim=0))
+            global_indices = p.indices.tolist()
             if kd_optimizer is None:
-                kd_optimizer = torch.optim.SGD(model.parameters(), lr=data.kd_lr)
-            DSFLServerHandler.distill(
+                kd_optimizer = torch.optim.SGD(model.parameters(), lr=c.kd_lr)
+            DSFLBaseServerHandler.distill(
                 model=model,
                 optimizer=kd_optimizer,
-                dataset=data.dataset,
+                dataset=c.dataset,
                 global_soft_labels=global_soft_labels,
                 global_indices=global_indices,
-                kd_epochs=data.kd_epochs,
-                kd_batch_size=data.kd_batch_size,
+                kd_epochs=c.kd_epochs,
+                kd_batch_size=c.kd_batch_size,
                 device=device,
+                stop_event=stop_event,
             )
 
         # Train
-        train_loader = data.dataset.get_dataloader(
-            type_="train",
-            cid=data.cid,
-            batch_size=data.batch_size,
+        train_loader = c.dataset.get_dataloader(
+            type_=DSFLPartitionType.TRAIN,
+            cid=c.cid,
+            batch_size=c.batch_size,
         )
-        DSFLParallelClientTrainer.train(
+        DSFLProcessPoolClientTrainer.train(
             model=model,
             optimizer=optimizer,
             train_loader=train_loader,
             device=device,
-            epochs=data.epochs,
+            epochs=c.epochs,
+            stop_event=stop_event,
         )
 
         # Predict
         open_loader = DataLoader(
-            Subset(open_dataset, data.payload.next_indices.tolist()),
-            batch_size=data.batch_size,
+            Subset(open_dataset, p.next_indices.tolist()),
+            batch_size=c.batch_size,
         )
-        soft_labels = DSFLParallelClientTrainer.predict(
+        soft_labels = DSFLProcessPoolClientTrainer.predict(
             model=model,
             open_loader=open_loader,
             device=device,
         )
 
         # Evaluate
-        test_loader = data.dataset.get_dataloader(
-            type_="test",
-            cid=data.cid,
-            batch_size=data.batch_size,
+        test_loader = c.dataset.get_dataloader(
+            type_=DSFLPartitionType.TEST,
+            cid=c.cid,
+            batch_size=c.batch_size,
         )
-        loss, acc = DSFLServerHandler.evaulate(
+        loss, acc = DSFLBaseServerHandler.evaulate(
             model=model,
             test_loader=test_loader,
             device=device,
@@ -376,19 +401,19 @@ class DSFLParallelClientTrainer(
 
         package = DSFLUplinkPackage(
             soft_labels=soft_labels,
-            indices=data.payload.next_indices,
+            indices=p.next_indices,
             metadata={"loss": loss, "acc": acc},
         )
 
-        torch.save(package, path)
+        torch.save(package, config_path)
         state = DSFLClientState(
             random=RandomState.get_random_state(device=device),
             model=model.state_dict(),
             optimizer=optimizer.state_dict(),
             kd_optimizer=kd_optimizer.state_dict() if kd_optimizer else None,
         )
-        torch.save(state, data.state_path)
-        return path
+        torch.save(state, c.state_path)
+        return config_path
 
     @staticmethod
     def train(
@@ -397,12 +422,15 @@ class DSFLParallelClientTrainer(
         train_loader: DataLoader,
         device: str,
         epochs: int,
+        stop_event: threading.Event,
     ) -> None:
         model.to(device)
         model.train()
         criterion = torch.nn.CrossEntropyLoss()
 
         for _ in range(epochs):
+            if stop_event.is_set():
+                break
             for data, target in train_loader:
                 data = data.to(device)
                 target = target.to(device)
@@ -417,7 +445,9 @@ class DSFLParallelClientTrainer(
 
     @staticmethod
     def predict(
-        model: torch.nn.Module, open_loader: DataLoader, device: str
+        model: torch.nn.Module,
+        open_loader: DataLoader,
+        device: str,
     ) -> torch.Tensor:
         model.to(device)
         model.eval()
@@ -435,10 +465,8 @@ class DSFLParallelClientTrainer(
         soft_labels = torch.cat(soft_labels_list, dim=0)
         return soft_labels.cpu()
 
-    def get_shared_data(
-        self, cid: int, payload: DSFLDownlinkPackage
-    ) -> DSFLDiskSharedData:
-        data = DSFLDiskSharedData(
+    def get_client_config(self, cid: int) -> DSFLClientConfig:
+        data = DSFLClientConfig(
             model_selector=self.model_selector,
             model_name=self.model_name,
             dataset=self.dataset,
@@ -450,12 +478,11 @@ class DSFLParallelClientTrainer(
             kd_lr=self.kd_lr,
             cid=cid,
             seed=self.seed,
-            payload=payload,
             state_path=self.state_dir.joinpath(f"{cid}.pt"),
         )
         return data
 
     def uplink_package(self) -> list[DSFLUplinkPackage]:
         package = deepcopy(self.cache)
-        self.cache: list[DSFLUplinkPackage] = []
+        self.cache = []
         return package

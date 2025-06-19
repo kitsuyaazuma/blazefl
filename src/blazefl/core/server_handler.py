@@ -1,11 +1,10 @@
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Protocol, TypeVar
 
 UplinkPackage = TypeVar("UplinkPackage")
-DownlinkPackage = TypeVar("DownlinkPackage")
+DownlinkPackage = TypeVar("DownlinkPackage", covariant=True)
 
 
-class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
+class BaseServerHandler(Protocol[UplinkPackage, DownlinkPackage]):
     """
     Abstract base class for server-side operations in federated learning.
 
@@ -18,7 +17,6 @@ class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
         NotImplementedError: If any of the methods are not implemented in a subclass.
     """
 
-    @abstractmethod
     def downlink_package(self) -> DownlinkPackage:
         """
         Prepare the data package to be sent from the server to clients.
@@ -28,7 +26,6 @@ class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    @abstractmethod
     def sample_clients(self) -> list[int]:
         """
         Select a list of client IDs to participate in the current training round.
@@ -38,7 +35,6 @@ class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    @abstractmethod
     def if_stop(self) -> bool:
         """
         Determine whether the federated learning process should be terminated.
@@ -48,7 +44,6 @@ class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    @abstractmethod
     def global_update(self, buffer: list[UplinkPackage]) -> None:
         """
         Update the global model based on the aggregated data from clients.
@@ -62,7 +57,6 @@ class ServerHandler(ABC, Generic[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    @abstractmethod
     def load(self, payload: UplinkPackage) -> bool:
         """
         Load a given payload into the server's state.

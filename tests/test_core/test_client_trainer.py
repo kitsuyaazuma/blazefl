@@ -1,10 +1,13 @@
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import torch
+import torch.multiprocessing as mp
 
-from src.blazefl.core import ParallelClientTrainer
+from src.blazefl.core import ProcessPoolClientTrainer
 
 
 @dataclass
@@ -19,41 +22,100 @@ class DownlinkPackage:
 
 
 @dataclass
-class DiskSharedData:
+class ClientConfig:
     cid: int
-    payload: DownlinkPackage
 
 
-class DummyParallelClientTrainer(
-    ParallelClientTrainer[UplinkPackage, DownlinkPackage, DiskSharedData]
+class DummyProcessPoolClientTrainer(
+    ProcessPoolClientTrainer[UplinkPackage, DownlinkPackage, ClientConfig]
 ):
+    def __init__(
+        self,
+        num_parallels: int,
+        share_dir: Path,
+        device: str,
+        ipc_mode: Literal["storage", "shared_memory"],
+    ):
+        self.num_parallels = num_parallels
+        self.share_dir = share_dir
+        self.share_dir.mkdir(parents=True, exist_ok=True)
+        self.device = device
+        if self.device == "cuda":
+            self.device_count = torch.cuda.device_count()
+        self.cache: list[UplinkPackage] = []
+        self.ipc_mode = ipc_mode
+        self.manager = mp.Manager()
+        self.stop_event = self.manager.Event()
+
     def uplink_package(self) -> list[UplinkPackage]:
         return self.cache
 
-    def get_shared_data(self, cid: int, payload: DownlinkPackage) -> DiskSharedData:
-        return DiskSharedData(cid=cid, payload=payload)
+    def get_client_config(self, cid: int) -> ClientConfig:
+        return ClientConfig(cid=cid)
 
     @staticmethod
-    def process_client(path: Path, device: str) -> Path:
-        data = torch.load(path, weights_only=False)
-        _ = device
-        downlink_package = data.payload
+    def worker(
+        config: ClientConfig | Path,
+        payload: DownlinkPackage | Path,
+        device: str,
+        stop_event: threading.Event,
+    ) -> UplinkPackage | Path:
+        def _storage_worker(
+            config_path: Path,
+            payload_path: Path,
+            device: str,
+            stop_event: threading.Event,
+        ) -> Path:
+            config = torch.load(config_path, weights_only=False)
+            assert isinstance(config, ClientConfig)
+            payload = torch.load(payload_path, weights_only=False)
+            dummy_uplink_package = _shared_memory_worker(
+                config=config,
+                payload=payload,
+                device=device,
+                stop_event=stop_event,
+            )
+            torch.save(dummy_uplink_package, config_path)
+            return config_path
 
-        dummy_uplink_package = UplinkPackage(
-            cid=data.cid, message=downlink_package.message + "<client_to_server>"
-        )
+        def _shared_memory_worker(
+            config: ClientConfig,
+            payload: DownlinkPackage,
+            device: str,
+            stop_event: threading.Event,
+        ) -> UplinkPackage:
+            _ = stop_event
+            _ = device
+            dummy_uplink_package = UplinkPackage(
+                cid=config.cid, message=payload.message + "<client_to_server>"
+            )
+            return dummy_uplink_package
 
-        torch.save(dummy_uplink_package, path)
-        return path
+        if isinstance(config, Path) and isinstance(payload, Path):
+            return _storage_worker(config, payload, device, stop_event)
+        elif isinstance(config, ClientConfig) and isinstance(payload, DownlinkPackage):
+            return _shared_memory_worker(config, payload, device, stop_event)
+        else:
+            raise TypeError(
+                "Invalid types for config and payload."
+                "Expected ClientConfig and DownlinkPackage or Path."
+            )
 
 
 @pytest.mark.parametrize("num_parallels", [1, 2, 4])
 @pytest.mark.parametrize("cid_list", [[], [42], [0, 1, 2]])
-def test_parallel_client_trainer(
-    tmp_path: Path, num_parallels: int, cid_list: list[int]
+@pytest.mark.parametrize("ipc_mode", ["storage", "shared_memory"])
+def test_process_pool_client_trainer(
+    tmp_path: Path,
+    num_parallels: int,
+    cid_list: list[int],
+    ipc_mode: Literal["storage", "shared_memory"],
 ) -> None:
-    trainer = DummyParallelClientTrainer(
-        num_parallels=num_parallels, share_dir=tmp_path, device="cpu"
+    trainer = DummyProcessPoolClientTrainer(
+        num_parallels=num_parallels,
+        share_dir=tmp_path,
+        device="cpu",
+        ipc_mode=ipc_mode,
     )
 
     dummy_payload = DownlinkPackage(message="<server_to_client>")

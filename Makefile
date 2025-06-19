@@ -3,7 +3,10 @@ format:
 
 lint:
 	ruff check . --fix
-	uv run mypy .
+	mypy src
 
 test:
-	uv run pytest -v tests
+	pytest -v tests
+
+stubgen:
+	stubgen -p blazefl.core -p blazefl.utils --no-analysis -o src

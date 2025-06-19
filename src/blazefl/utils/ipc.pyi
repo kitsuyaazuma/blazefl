@@ -1,0 +1,3 @@
+from typing import Any
+
+def move_tensor_to_shared_memory(obj: Any, max_depth: int = 1) -> None: ...
