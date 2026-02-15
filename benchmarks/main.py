@@ -117,7 +117,7 @@ def main(num_runs: int = 3, model_name: Literal["CNN", "RESNET18"] = "CNN") -> N
     cpu_count = os.cpu_count() or 1
     gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
-    num_parallels: list[int] = [2**i for i in range(int(math.log2(cpu_count) + 1))]
+    num_parallels: list[int] = [2**i for i in range(1, int(math.log2(cpu_count) + 1))]
 
     wandb_config = {
         "model_name": model_name,
@@ -174,8 +174,9 @@ def main(num_runs: int = 3, model_name: Literal["CNN", "RESNET18"] = "CNN") -> N
 
         flower_command = (
             "cd flower-case && "
-            "RAY_TMPDIR=/tmp/flower-case "
+            "export RAY_TMPDIR=/tmp/flower-case && "
             "FLWR_HOME=$(pwd) "
+            "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 "
             "uv run flwr run . local "
             f"--run-config 'model-name=\"{model_name}\"' "
             "&& rm -rf ${RAY_TMPDIR} "
