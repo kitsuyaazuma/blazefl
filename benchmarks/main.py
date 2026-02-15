@@ -160,7 +160,6 @@ def main(num_runs: int = 3, model_name: Literal["CNN", "RESNET18"] = "CNN") -> N
                 log_result(num_parallel, result)
 
         client_cpus = cpu_count // num_parallel
-        client_gpus = gpu_count / num_parallel
 
         # Update Flower config
         config_tmpl_path = Path("flower-case/config.toml.tmpl")
@@ -170,9 +169,6 @@ def main(num_runs: int = 3, model_name: Literal["CNN", "RESNET18"] = "CNN") -> N
             config["superlink"]["local"]["options"]["backend"]["client-resources"][
                 "num-cpus"
             ] = client_cpus
-            config["superlink"]["local"]["options"]["backend"]["client-resources"][
-                "num-gpus"
-            ] = float(client_gpus)
             with open(config_path, "w") as f:
                 toml.dump(config, f)
 
