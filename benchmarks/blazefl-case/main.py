@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.multiprocessing as mp
 import typer
@@ -167,6 +168,7 @@ def main(
     pipeline = FedAvgBenchmarkPipeline(handler=handler, trainer=trainer)
     try:
         pipeline.main()
+        return pipeline.handler.get_summary()["server_acc"]
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt")
     finally:
@@ -174,8 +176,27 @@ def main(
         shutil.rmtree(state_dir, ignore_errors=True)
 
 
+def run_experiment(trials: int) -> None:
+    final_accuracies: list[float] = []
+
+    for trial in range(trials):
+        logging.info(f"=== Starting Trial {trial + 1}/{trials} ===")
+        accuracy = main(
+            model_name=FedAvgModelName.CNN,
+            seed=42,
+            execution_mode=ExecutionMode.MULTI_THREADED,
+        )
+        assert accuracy is not None, "Accuracy should not be None"
+        final_accuracies.append(accuracy)
+
+    print(f"Final Accuracies: {final_accuracies}")
+    print(f"Mean: {np.mean(final_accuracies):.4f}")
+    print(f"Std Dev: {np.std(final_accuracies):.4f}")
+
+
 if __name__ == "__main__":
     # NOTE: To use CUDA with multiprocessing, you must use the 'spawn' start method
     mp.set_start_method("spawn")
 
-    typer.run(main)
+    # typer.run(main)
+    run_experiment(trials=10)

@@ -6,6 +6,7 @@ license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "blazefl[reproducibility]>=2.0.3",
     "flwr-datasets[vision]>=0.5.0",
     "flwr[simulation]>=1.26.1",
     "ray[default]>=2.51.1",

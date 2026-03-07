@@ -3,6 +3,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 
 import torch
+from blazefl.reproducibility import seed_everything
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
@@ -10,6 +11,8 @@ from torch import nn
 
 from .models import get_model
 from .task import load_centralized_dataset, test
+
+seed_everything(42)
 
 # Create ServerApp
 app = ServerApp()

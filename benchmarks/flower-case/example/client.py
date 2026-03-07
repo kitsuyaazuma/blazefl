@@ -1,6 +1,7 @@
 from collections import OrderedDict
 
 import torch
+from blazefl.reproducibility import seed_everything
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
@@ -8,6 +9,8 @@ from example.task import train as train_fn
 
 from .models import get_model
 from .task import load_data
+
+seed_everything(42)
 
 # Flower ClientApp
 app = ClientApp()
