@@ -10,6 +10,7 @@ dependencies = [
     "toml>=0.10.2",
     "torch>=2.10.0",
     "typer>=0.21.1",
+    "wandb>=0.24.2",
 ]
 
 [dependency-groups]
@@ -43,3 +44,7 @@ select = [
 ]
 ignore = []
 fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["wandb"]
+

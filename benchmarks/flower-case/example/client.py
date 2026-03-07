@@ -13,8 +13,10 @@ from .task import load_data
 app = ClientApp()
 
 device = "cpu"
+cuda_device_count = 0
 if torch.cuda.is_available():
     device = "cuda"
+    cuda_device_count = torch.cuda.device_count()
 elif torch.backends.mps.is_available():
     device = "mps"
 
@@ -22,13 +24,17 @@ elif torch.backends.mps.is_available():
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on local data."""
+    global device, cuda_device_count
 
     # Load the model and initialize it with the received weights
     model = get_model(str(context.run_config["model-name"]), num_classes=10)
     arrays = msg.content["arrays"]
     assert isinstance(arrays, ArrayRecord)
     model.load_state_dict(arrays.to_torch_state_dict())
-    model.to(device)
+    client_device = device
+    if device == "cuda" and cuda_device_count > 1:
+        client_device = f"cuda:{context.node_id % cuda_device_count}"
+    model.to(client_device)
 
     # Load the data
     partition_id = int(context.node_config["partition-id"])
@@ -42,7 +48,7 @@ def train(msg: Message, context: Context):
         trainloader,
         context.run_config["local-epochs"],
         msg.content["config"]["lr"],
-        device,
+        client_device,
     )
 
     # Construct and return reply Message

@@ -1,4 +1,5 @@
 import logging
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -168,6 +169,9 @@ def main(
         pipeline.main()
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt")
+    finally:
+        shutil.rmtree(dataset_split_dir, ignore_errors=True)
+        shutil.rmtree(state_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

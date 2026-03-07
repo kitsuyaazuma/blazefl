@@ -14,5 +14,5 @@ uv sync
 ## Usage
 
 ```bash
-FLWR_HOME=$(pwd) uv run flwr run .
+RAY_TMPDIR=/tmp/flower-case FLWR_HOME=$(pwd) uv run flwr run .
 ```
