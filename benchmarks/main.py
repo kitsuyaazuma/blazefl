@@ -112,7 +112,10 @@ def log_result(num_parallel: int, result: Result) -> None:
     )
 
 
-def main(num_runs: int = 3, model_name: Literal["CNN", "RESNET18"] = "CNN") -> None:
+def main(
+    num_runs: int = 3,
+    model_name: Literal["CNN", "RESNET18", "RESNET50", "RESNET101"] = "CNN",
+) -> None:
     logging.info("Starting benchmark...")
     # cpu_count = os.cpu_count() or 1
     cpu_count = len(os.sched_getaffinity(0)) or 1

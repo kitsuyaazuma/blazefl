@@ -4,12 +4,14 @@ import torch
 from blazefl.core import ModelSelector
 from torch import nn
 from torch.nn import functional as F
-from torchvision.models import resnet18
+from torchvision.models import resnet18, resnet50, resnet101
 
 
 class FedAvgModelName(StrEnum):
     CNN = "CNN"
     RESNET18 = "RESNET18"
+    RESNET50 = "RESNET50"
+    RESNET101 = "RESNET101"
 
 
 class FedAvgModelSelector(ModelSelector[FedAvgModelName]):
@@ -25,6 +27,10 @@ class FedAvgModelSelector(ModelSelector[FedAvgModelName]):
                     return CNN(num_classes=self.num_classes)
                 case FedAvgModelName.RESNET18:
                     return resnet18(num_classes=self.num_classes)
+                case FedAvgModelName.RESNET50:
+                    return resnet50(num_classes=self.num_classes)
+                case FedAvgModelName.RESNET101:
+                    return resnet101(num_classes=self.num_classes)
 
 
 class CNN(nn.Module):

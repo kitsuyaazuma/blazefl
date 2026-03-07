@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torchvision.models import resnet18
+from torchvision.models import resnet18, resnet50, resnet101
 
 
 class CNN(nn.Module):
@@ -36,5 +36,9 @@ def get_model(model_name: str, num_classes: int) -> nn.Module:
             return CNN(num_classes=num_classes)
         case "RESNET18":
             return resnet18(num_classes=num_classes)
+        case "RESNET50":
+            return resnet50(num_classes=num_classes)
+        case "RESNET101":
+            return resnet101(num_classes=num_classes)
         case _:
             raise ValueError(f"Invalid model name: {model_name}")
