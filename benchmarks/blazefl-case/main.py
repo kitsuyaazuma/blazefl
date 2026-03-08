@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import shutil
 import sys
@@ -9,7 +10,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.multiprocessing as mp
-import typer
 from blazefl.contrib import (
     FedAvgBaseClientTrainer,
     FedAvgBaseServerHandler,
@@ -49,6 +49,14 @@ class FedAvgBenchmarkPipeline:
                 self.handler.load(pack)
 
             summary = self.handler.get_summary()
+
+            # Calculate model hash
+            model_hash = hashlib.sha256()
+            for name, param in self.handler.model.state_dict().items():
+                model_hash.update(name.encode("utf-8"))
+                model_hash.update(param.cpu().numpy().tobytes())
+            print(f"round: {round_}, model_hash: {model_hash.hexdigest()}")
+
             formatted_summary = ", ".join(f"{k}: {v:.3f}" for k, v in summary.items())
             logging.info(f"round: {round_}, {formatted_summary}")
 

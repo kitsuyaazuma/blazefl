@@ -1,3 +1,4 @@
+import hashlib
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -63,8 +64,16 @@ def get_evaluate_fn(
         """Evaluate model on central data."""
 
         # Load the model and initialize it with the received weights
-        model.load_state_dict(arrays.to_torch_state_dict())
+        state_dict = arrays.to_torch_state_dict()
+        model.load_state_dict(state_dict)
         model.to(device)
+
+        # Calculate model hash
+        model_hash = hashlib.sha256()
+        for name, param in state_dict.items():
+            model_hash.update(name.encode("utf-8"))
+            model_hash.update(param.cpu().numpy().tobytes())
+        print(f"round: {server_round}, model_hash: {model_hash.hexdigest()}")
 
         # Load entire test set
         test_dataloader = load_centralized_dataset(batch_size)

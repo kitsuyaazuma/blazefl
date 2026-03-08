@@ -36,7 +36,8 @@ def run_once(run_idx: int) -> float:
 
     assert proc.stdout is not None
     for line in proc.stdout:
-        print(line, end="")
+        if "model_hash" in line:
+            print(line, end="")
         found = ACCURACY_PATTERN.findall(line)
         if found:
             matches.extend(found)
