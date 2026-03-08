@@ -7,10 +7,11 @@ from statistics import mean, stdev
 
 NUM_RUNS = 10
 
-CMD = ["uv", "run", "flwr", "run", "."]
+CMD = ["uv", "run", "flwr", "run", ".", "local"]
 
 ENV = os.environ.copy()
 ENV["RAY_TMPDIR"] = "/tmp/flower-case"
+ENV["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
 ENV["FLWR_HOME"] = os.getcwd()
 
 # e.g.,
