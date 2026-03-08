@@ -10,8 +10,6 @@ from example.task import train as train_fn
 from .models import get_model
 from .task import load_data
 
-seed_everything(42)
-
 # Flower ClientApp
 app = ClientApp()
 
@@ -28,6 +26,9 @@ elif torch.backends.mps.is_available():
 def train(msg: Message, context: Context):
     """Train the model on local data."""
     global device, cuda_device_count
+
+    # Fix seed
+    seed_everything(42)
 
     # Load the model and initialize it with the received weights
     model = get_model(str(context.run_config["model-name"]), num_classes=10)
