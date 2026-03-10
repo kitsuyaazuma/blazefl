@@ -53,6 +53,7 @@ def train(msg: Message, context: Context):
         context.run_config["local-epochs"],
         msg.content["config"]["lr"],
         client_device,
+        cid=partition_id,
     )
 
     # Construct and return reply Message

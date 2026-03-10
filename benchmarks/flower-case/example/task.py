@@ -69,19 +69,26 @@ def load_centralized_dataset(batch_size: int):
     return DataLoader(dataset, batch_size=batch_size)  # pyright: ignore[reportArgumentType]
 
 
-def train(net, trainloader, epochs, lr, device):
+def train(net, trainloader, epochs, lr, device, cid=None):
     """Train the model on the training set."""
     net.to(device)  # move model to GPU if available
     criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.SGD(net.parameters(), lr=lr)
     net.train()
     running_loss = 0.0
-    for _ in range(epochs):
-        for batch in trainloader:
+    for epoch in range(epochs):
+        for batch_idx, batch in enumerate(trainloader):
             images = batch["img"].to(device)
             labels = batch["label"].to(device)
             optimizer.zero_grad()
-            loss = criterion(net(images), labels)
+
+            outputs = net(images)
+            if cid == 0 and epoch == 0 and batch_idx == 0:
+                logits = outputs[0][:5].tolist()
+                logits_str = ", ".join(f"{x:.4f}" for x in logits)
+                print(f"[Flower Micro-Check] Client {cid} Logits: [{logits_str}]")
+            loss = criterion(outputs, labels)
+
             loss.backward()
             optimizer.step()
             running_loss += loss.item()

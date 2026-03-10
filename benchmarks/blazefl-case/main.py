@@ -187,11 +187,16 @@ def main(
 def run_experiment(trials: int) -> None:
     final_accuracies: list[float] = []
 
-    for trial in range(trials):
-        logging.info(f"=== Starting Trial {trial + 1}/{trials} ===")
+    num_parallels = [2**i for i in range(0,7)]
+
+    # for trial in range(trials):
+        # logging.info(f"=== Starting Trial {trial + 1}/{trials} ===")
+    for num_parallel in num_parallels:
+        logging.info(f"=== Starting Degree of Parallelism {num_parallel} ===")
         accuracy = main(
             model_name=FedAvgModelName.CNN,
             seed=42,
+            num_parallels=num_parallel,
             execution_mode=ExecutionMode.MULTI_THREADED,
         )
         assert accuracy is not None, "Accuracy should not be None"

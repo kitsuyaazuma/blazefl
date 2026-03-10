@@ -39,6 +39,8 @@ def run_once(run_idx: int) -> float:
     for line in proc.stdout:
         if "model_hash" in line:
             print(line, end="")
+        if "Micro-Check" in line:
+            print(line, end="")
         found = ACCURACY_PATTERN.findall(line)
         if found:
             matches.extend(found)
