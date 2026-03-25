@@ -583,7 +583,10 @@ class FedAvgProcessPoolClientTrainer(
         setup_reproducibility(config.seed)
         if config.state_path.exists():
             state = torch.load(config.state_path, weights_only=False)
-            assert isinstance(state, RNGSuite)
+            if not isinstance(state, RNGSuite):
+                raise TypeError(
+                    f"Expected RNGSuite in {config.state_path}, got {type(state)}"
+                )
         else:
             state = create_rng_suite(config.seed)
 
@@ -611,11 +614,16 @@ class FedAvgProcessPoolClientTrainer(
             dataset=train_loader.dataset,
         )
 
-        assert (
-            shm_buffer is not None
-            and isinstance(shm_buffer.model_parameters, torch.Tensor)
-            and isinstance(package.model_parameters, torch.Tensor)
-        )
+        if shm_buffer is None or not isinstance(
+            shm_buffer.model_parameters, torch.Tensor
+        ):
+            raise RuntimeError(
+                "shm_buffer must be a pre-allocated shared memory package"
+            )
+        if not isinstance(package.model_parameters, torch.Tensor):
+            raise RuntimeError(
+                "package.model_parameters must be a Tensor before SHM copy"
+            )
         shm_buffer.model_parameters.copy_(package.model_parameters)
         package.model_parameters = SHMHandle()
         return package

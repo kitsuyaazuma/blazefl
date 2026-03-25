@@ -103,7 +103,11 @@ class FilteredDataset(Dataset):
         """
         self.data = [original_data[i] for i in indices]
         if original_targets is not None:
-            assert len(original_data) == len(original_targets)
+            if len(original_data) != len(original_targets):
+                raise ValueError(
+                    f"original_data and original_targets must have the same length, "
+                    f"got {len(original_data)} and {len(original_targets)}"
+                )
             self.targets = [original_targets[i] for i in indices]
         self.transform = transform
         self.target_transform = target_transform
