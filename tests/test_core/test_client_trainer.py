@@ -27,7 +27,9 @@ class ClientConfig:
 
 
 class DummyProcessPoolClientTrainer(
-    ProcessPoolClientTrainer[UplinkPackage, DownlinkPackage, ClientConfig]
+    ProcessPoolClientTrainer[
+        UplinkPackage, DownlinkPackage, ClientConfig, UplinkPackage
+    ]
 ):
     def __init__(
         self,
@@ -49,6 +51,9 @@ class DummyProcessPoolClientTrainer(
 
     def prepare_uplink_package_buffer(self) -> UplinkPackage:
         return UplinkPackage(cid=-1, message="", tensor=torch.zeros(1))
+
+    def convert_buffer_to_uplink(self, buffer: UplinkPackage) -> UplinkPackage:
+        return buffer
 
     @staticmethod
     def worker(

@@ -47,17 +47,24 @@ class BaseClientTrainer(Protocol[UplinkPackage, DownlinkPackage]):
 
 
 ClientConfig = TypeVar("ClientConfig")
+BufferPackage = TypeVar("BufferPackage")
 
 
 class ProcessPoolClientTrainer(
     BaseClientTrainer[UplinkPackage, DownlinkPackage],
-    Protocol[UplinkPackage, DownlinkPackage, ClientConfig],
+    Protocol[UplinkPackage, DownlinkPackage, ClientConfig, BufferPackage],
 ):
     """
     Abstract base class for parallel client training using a process pool.
 
     This class enables parallel processing of clients by distributing tasks across
     multiple processes.
+
+    ``BufferPackage`` is the internal transport type used between worker processes and
+    the parent. It may differ from ``UplinkPackage`` when workers use shared memory
+    placeholders (e.g. ``SHMHandle``). The conversion is handled by
+    ``convert_buffer_to_uplink``, which is called inside ``local_process`` after
+    reconstruction from shared memory.
 
     Attributes:
         num_parallels (int): Number of parallel processes to use.
@@ -125,8 +132,8 @@ class ProcessPoolClientTrainer(
         device: str,
         stop_event: threading.Event,
         *,
-        shm_buffer: UplinkPackage | None = None,
-    ) -> UplinkPackage:
+        shm_buffer: BufferPackage | None = None,
+    ) -> BufferPackage:
         """
         Process a single client's training task.
 
@@ -141,16 +148,38 @@ class ProcessPoolClientTrainer(
                 The downlink payload from the server
             device (str): Device to use for processing (e.g., "cpu", "cuda:0").
             stop_event (threading.Event): Event to signal stopping the worker.
-            shm_buffer (UplinkPackage | None):
+            shm_buffer (BufferPackage | None):
                 Optional shared memory buffer for the uplink package.
 
         Returns:
-            UplinkPackage:
-                The uplink package containing the client's results.
+            BufferPackage:
+                The transport package containing the client's results.
         """
         ...
 
-    def prepare_uplink_package_buffer(self) -> UplinkPackage:
+    def prepare_uplink_package_buffer(self) -> BufferPackage:
+        """
+        Allocate a pre-initialized shared memory buffer for a single client's result.
+
+        Returns:
+            BufferPackage: A buffer object whose tensors are in shared memory.
+        """
+        raise NotImplementedError
+
+    def convert_buffer_to_uplink(self, buffer: BufferPackage) -> UplinkPackage:
+        """
+        Convert a reconstructed ``BufferPackage`` to an ``UplinkPackage``.
+
+        Called by ``local_process`` after shared memory reconstruction. When
+        ``BufferPackage`` and ``UplinkPackage`` are the same type, implement this
+        as ``return buffer``.
+
+        Args:
+            buffer (BufferPackage): The reconstructed buffer from shared memory.
+
+        Returns:
+            UplinkPackage: The uplink package to be stored in ``cache``.
+        """
         raise NotImplementedError
 
     def local_process(self, payload: DownlinkPackage, cid_list: list[int]) -> None:
@@ -205,8 +234,8 @@ class ProcessPoolClientTrainer(
             for i, job in enumerate(self.progress_fn(jobs)):
                 result = job.get()
                 cid = cid_list[i]
-                package = reconstruct_from_shared_memory(result, shm_buffers[cid])
-                self.cache.append(package)
+                buffer = reconstruct_from_shared_memory(result, shm_buffers[cid])
+                self.cache.append(self.convert_buffer_to_uplink(buffer))
         finally:
             self.stop_event.set()
             pool.close()

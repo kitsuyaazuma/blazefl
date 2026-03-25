@@ -49,8 +49,26 @@ class FedAvgUplinkPackage:
 
 
 @dataclass
-class FedAvgProcessPoolUplinkPackage(FedAvgUplinkPackage):
-    model_parameters: torch.Tensor | SHMHandle  # type: ignore
+class FedAvgProcessPoolUplinkPackage:
+    """
+    Internal transport package used within the process pool machinery.
+
+    Identical to FedAvgUplinkPackage except model_parameters may be an SHMHandle
+    placeholder while the actual tensor lives in shared memory. Converted to
+    FedAvgUplinkPackage before being exposed to the server.
+
+    Attributes:
+        cid (int): Client ID.
+        model_parameters (torch.Tensor | SHMHandle): Serialized model parameters or
+            a shared memory placeholder.
+        data_size (int): Number of data samples used in the client's training.
+        metadata (dict | None): Optional metadata, such as evaluation metrics.
+    """
+
+    cid: int
+    model_parameters: torch.Tensor | SHMHandle
+    data_size: int
+    metadata: dict[str, float] | None = None
 
 
 @dataclass
@@ -460,7 +478,10 @@ class FedAvgClientConfig:
 
 class FedAvgProcessPoolClientTrainer(
     ProcessPoolClientTrainer[
-        FedAvgProcessPoolUplinkPackage, FedAvgDownlinkPackage, FedAvgClientConfig
+        FedAvgUplinkPackage,
+        FedAvgDownlinkPackage,
+        FedAvgClientConfig,
+        FedAvgProcessPoolUplinkPackage,
     ]
 ):
     """
@@ -517,7 +538,7 @@ class FedAvgProcessPoolClientTrainer(
         self.num_parallels = num_parallels
         self.device = device
         self.device_count = torch.cuda.device_count()
-        self.cache = []
+        self.cache: list[FedAvgUplinkPackage] = []
 
         self.model_selector = model_selector
         self.model_name = model_name
@@ -548,6 +569,17 @@ class FedAvgProcessPoolClientTrainer(
             cid=-1,
             model_parameters=self.model_parameters_buffer.clone(),
             data_size=0,
+        )
+
+    def convert_buffer_to_uplink(
+        self, buffer: FedAvgProcessPoolUplinkPackage
+    ) -> FedAvgUplinkPackage:
+        assert isinstance(buffer.model_parameters, torch.Tensor)
+        return FedAvgUplinkPackage(
+            cid=buffer.cid,
+            model_parameters=buffer.model_parameters,
+            data_size=buffer.data_size,
+            metadata=buffer.metadata,
         )
 
     @staticmethod
@@ -703,7 +735,7 @@ class FedAvgProcessPoolClientTrainer(
         )
         return data
 
-    def uplink_package(self) -> list[FedAvgProcessPoolUplinkPackage]:
+    def uplink_package(self) -> list[FedAvgUplinkPackage]:
         """
         Retrieve the uplink packages for transmission to the server.
 
