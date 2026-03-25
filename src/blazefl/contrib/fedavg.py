@@ -476,6 +476,41 @@ class FedAvgClientConfig:
     state_path: Path
 
 
+def _fedavg_train(
+    model: torch.nn.Module,
+    model_parameters: torch.Tensor,
+    train_loader: DataLoader,
+    device: str,
+    epochs: int,
+    lr: float,
+    stop_event: threading.Event,
+) -> tuple[torch.Tensor, int]:
+    model.to(device)
+    deserialize_model(model, model_parameters)
+    model.train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    for _ in range(epochs):
+        if stop_event.is_set():
+            break
+        for data, target in train_loader:
+            data = data.to(device)
+            target = target.to(device)
+
+            output = model(data)
+            loss = criterion(output, target)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    assert isinstance(train_loader.dataset, Sized)
+    data_size = len(train_loader.dataset)
+    serialized_parameters = serialize_model(model)
+    return serialized_parameters, data_size
+
+
 class FedAvgProcessPoolClientTrainer(
     ProcessPoolClientTrainer[
         FedAvgUplinkPackage,
@@ -671,46 +706,10 @@ class FedAvgProcessPoolClientTrainer(
         stop_event: threading.Event,
         cid: int,
     ) -> FedAvgProcessPoolUplinkPackage:
-        """
-        Train the model with the given training data loader.
-
-        Args:
-            model (torch.nn.Module): The model to train.
-            model_parameters (torch.Tensor): Initial global model parameters.
-            train_loader (DataLoader): DataLoader for the training data.
-            device (str): Device to run the training on.
-            epochs (int): Number of local training epochs.
-            lr (float): Learning rate for the optimizer.
-
-        Returns:
-            FedAvgUplinkPackage: Uplink package containing updated model parameters
-            and data size.
-        """
-        model.to(device)
-        deserialize_model(model, model_parameters)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-        criterion = torch.nn.CrossEntropyLoss()
-
-        for _ in range(epochs):
-            if stop_event.is_set():
-                break
-            for data, target in train_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        assert isinstance(train_loader.dataset, Sized)
-        data_size = len(train_loader.dataset)
-        model_parameters = serialize_model(model)
-
-        return FedAvgProcessPoolUplinkPackage(cid, model_parameters, data_size)
+        serialized_parameters, data_size = _fedavg_train(
+            model, model_parameters, train_loader, device, epochs, lr, stop_event
+        )
+        return FedAvgProcessPoolUplinkPackage(cid, serialized_parameters, data_size)
 
     def get_client_config(self, cid: int) -> FedAvgClientConfig:
         """
@@ -826,46 +825,10 @@ class FedAvgThreadPoolClientTrainer(
         stop_event: threading.Event,
         cid: int,
     ) -> FedAvgUplinkPackage:
-        """
-        Train the model with the given training data loader.
-
-        Args:
-            model (torch.nn.Module): The model to train.
-            model_parameters (torch.Tensor): Initial global model parameters.
-            train_loader (DataLoader): DataLoader for the training data.
-            device (str): Device to run the training on.
-            epochs (int): Number of local training epochs.
-            lr (float): Learning rate for the optimizer.
-
-        Returns:
-            FedAvgUplinkPackage: Uplink package containing updated model parameters
-            and data size.
-        """
-        model.to(device)
-        deserialize_model(model, model_parameters)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-        criterion = torch.nn.CrossEntropyLoss()
-
-        for _ in range(epochs):
-            if stop_event.is_set():
-                break
-            for data, target in train_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        assert isinstance(train_loader.dataset, Sized)
-        data_size = len(train_loader.dataset)
-        model_parameters = serialize_model(model)
-
-        return FedAvgUplinkPackage(cid, model_parameters, data_size)
+        serialized_parameters, data_size = _fedavg_train(
+            model, model_parameters, train_loader, device, epochs, lr, stop_event
+        )
+        return FedAvgUplinkPackage(cid, serialized_parameters, data_size)
 
     def uplink_package(self) -> list[FedAvgUplinkPackage]:
         package = self.cache
