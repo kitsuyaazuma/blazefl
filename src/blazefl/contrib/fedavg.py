@@ -1,5 +1,5 @@
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sized
 from concurrent.futures import Future, as_completed
 from dataclasses import dataclass
 from enum import StrEnum
@@ -396,7 +396,6 @@ class FedAvgBaseClientTrainer(
         deserialize_model(self.model, model_parameters)
         self.model.train()
 
-        data_size = 0
         for _ in range(self.epochs):
             for data, target in train_loader:
                 data = data.to(self.device)
@@ -405,12 +404,12 @@ class FedAvgBaseClientTrainer(
                 output = self.model(data)
                 loss = self.criterion(output, target)
 
-                data_size += len(target)
-
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
 
+        assert isinstance(train_loader.dataset, Sized)
+        data_size = len(train_loader.dataset)
         model_parameters = serialize_model(self.model)
 
         return FedAvgUplinkPackage(cid, model_parameters, data_size)
@@ -654,7 +653,6 @@ class FedAvgProcessPoolClientTrainer(
         optimizer = torch.optim.SGD(model.parameters(), lr=lr)
         criterion = torch.nn.CrossEntropyLoss()
 
-        data_size = 0
         for _ in range(epochs):
             if stop_event.is_set():
                 break
@@ -665,12 +663,12 @@ class FedAvgProcessPoolClientTrainer(
                 output = model(data)
                 loss = criterion(output, target)
 
-                data_size += len(target)
-
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
+        assert isinstance(train_loader.dataset, Sized)
+        data_size = len(train_loader.dataset)
         model_parameters = serialize_model(model)
 
         return FedAvgProcessPoolUplinkPackage(cid, model_parameters, data_size)
@@ -811,7 +809,6 @@ class FedAvgThreadPoolClientTrainer(
         optimizer = torch.optim.SGD(model.parameters(), lr=lr)
         criterion = torch.nn.CrossEntropyLoss()
 
-        data_size = 0
         for _ in range(epochs):
             if stop_event.is_set():
                 break
@@ -822,12 +819,12 @@ class FedAvgThreadPoolClientTrainer(
                 output = model(data)
                 loss = criterion(output, target)
 
-                data_size += len(target)
-
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
+        assert isinstance(train_loader.dataset, Sized)
+        data_size = len(train_loader.dataset)
         model_parameters = serialize_model(model)
 
         return FedAvgUplinkPackage(cid, model_parameters, data_size)
