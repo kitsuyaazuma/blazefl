@@ -36,8 +36,7 @@ class DummyProcessPoolClientTrainer(
     ):
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache: list[UplinkPackage] = []
         self.manager = mp.Manager()
         self.stop_event = self.manager.Event()

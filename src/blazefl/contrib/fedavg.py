@@ -481,7 +481,7 @@ class FedAvgProcessPoolClientTrainer(
         lr (float): Learning rate for the optimizer.
         seed (int): Seed for reproducibility.
         num_parallels (int): Number of parallel processes for training.
-        device_count (int | None): Number of CUDA devices available (if using GPU).
+        device_count (int): Number of CUDA devices available (0 if not using GPU).
     """
 
     def __init__(
@@ -516,8 +516,7 @@ class FedAvgProcessPoolClientTrainer(
         """
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache = []
 
         self.model_selector = model_selector
@@ -729,8 +728,7 @@ class FedAvgThreadPoolClientTrainer(
     ) -> None:
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache: list[FedAvgUplinkPackage] = []
 
         self.model_selector = model_selector

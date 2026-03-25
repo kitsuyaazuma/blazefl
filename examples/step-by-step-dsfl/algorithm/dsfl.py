@@ -291,8 +291,7 @@ class DSFLThreadPoolClientTrainer(
     ) -> None:
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache: list[DSFLUplinkPackage] = []
 
         self.model_selector = model_selector
