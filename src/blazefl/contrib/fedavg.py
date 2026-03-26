@@ -362,7 +362,6 @@ class FedAvgBaseClientTrainer(
         self.seed = seed
 
         self.model.to(self.device)
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
         self.criterion = torch.nn.CrossEntropyLoss()
         self.cache: list[FedAvgUplinkPackage] = []
 
@@ -413,6 +412,7 @@ class FedAvgBaseClientTrainer(
         """
         deserialize_model(self.model, model_parameters)
         self.model.train()
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
 
         for _ in range(self.epochs):
             for data, target in train_loader:
@@ -422,9 +422,9 @@ class FedAvgBaseClientTrainer(
                 output = self.model(data)
                 loss = self.criterion(output, target)
 
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
-                self.optimizer.step()
+                optimizer.step()
 
         assert isinstance(train_loader.dataset, Sized)
         data_size = len(train_loader.dataset)
