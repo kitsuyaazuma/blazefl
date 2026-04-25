@@ -8,7 +8,13 @@ import torch
 @dataclass(frozen=True)
 class SHMHandle:
     """
-    A lightweight, serializable handle to a tensor stored in shared memory.
+    Sentinel placeholder for a tensor stored in shared memory.
+
+    ``process_tensors_in_object(..., mode="replace")`` swaps ``torch.Tensor``
+    instances for ``SHMHandle()`` so a lightweight, serializable object graph can
+    be sent between processes without copying tensor payloads. During
+    reconstruction, ``reconstruct_from_shared_memory`` treats this empty marker as
+    "take the corresponding tensor from the shared-memory buffer".
     """
 
     pass
