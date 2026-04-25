@@ -56,7 +56,7 @@ class RandomStateSnapshot:
     torch_cuda: torch.Tensor | None
 
     @classmethod
-    def capture(cls) -> "RandomStateSnapshot":
+    def capture(cls) -> RandomStateSnapshot:
         """
         Captures the current global random state.
 
@@ -81,7 +81,7 @@ class RandomStateSnapshot:
         return snapshot
 
     @staticmethod
-    def restore(snapshot: "RandomStateSnapshot") -> None:
+    def restore(snapshot: RandomStateSnapshot) -> None:
         """
         Restores the global random state from a snapshot object.
 

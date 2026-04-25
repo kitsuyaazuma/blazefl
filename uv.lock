@@ -80,7 +80,7 @@ wheels = [
 
 [[package]]
 name = "blazefl"
-version = "3.0.0a1"
+version = "3.0.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "torch" },

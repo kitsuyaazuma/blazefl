@@ -1,12 +1,12 @@
 [project]
 name = "blazefl"
-version = "3.0.0a1"
+version = "3.0.0b1"
 description = "A blazing-fast, minimalist, and researcher-friendly simulation framework for Federated Learning."
 readme = "README.md"
 authors = [
     { name = "kitsuyaazuma", email = "kitsuyaazuma@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
 
