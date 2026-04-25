@@ -2,6 +2,7 @@ import signal
 import threading
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from multiprocessing.pool import ApplyResult
 from typing import Protocol, TypeVar
 
@@ -182,6 +183,29 @@ class ProcessPoolClientTrainer(
         """
         raise NotImplementedError
 
+    def shutdown(self) -> None:
+        """
+        Shut down process-shared coordination resources owned by the trainer.
+
+        Subclasses that create a ``multiprocessing.Manager`` should store it on
+        ``self.manager`` so this method can shut it down explicitly.
+        """
+        manager = getattr(self, "manager", None)
+        if manager is None:
+            return
+
+        shutdown = getattr(manager, "shutdown", None)
+        if shutdown is None:
+            return
+
+        shutdown()
+        with suppress(AttributeError):
+            delattr(self, "manager")
+
+    def __del__(self) -> None:
+        with suppress(Exception):
+            self.shutdown()
+
     def local_process(self, payload: DownlinkPackage, cid_list: list[int]) -> None:
         """
         Manage the parallel processing of clients.
@@ -211,6 +235,7 @@ class ProcessPoolClientTrainer(
             initializer=signal.signal,
             initargs=(signal.SIGINT, signal.SIG_IGN),
         )
+        should_terminate_pool = True
         try:
             jobs: list[ApplyResult] = []
             for cid in cid_list:
@@ -236,9 +261,13 @@ class ProcessPoolClientTrainer(
                 cid = cid_list[i]
                 buffer = reconstruct_from_shared_memory(result, shm_buffers[cid])
                 self.cache.append(self.convert_buffer_to_uplink(buffer))
+            should_terminate_pool = False
         finally:
             self.stop_event.set()
-            pool.close()
+            if should_terminate_pool:
+                pool.terminate()
+            else:
+                pool.close()
             pool.join()
 
 

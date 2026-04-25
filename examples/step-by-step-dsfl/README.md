@@ -9,6 +9,18 @@ Think of it as assembling puzzle pieces to create your own unique FL methods—b
 In this tutorial, we’ll guide you through creating a DS-FL pipeline using BlazeFL.
 By following along, you’ll be able to develop your own original FL methods.
 
+## Testing Signals
+
+To test graceful shutdown for the example entrypoint with direct Python process
+signaling, run:
+
+```bash
+sh ./test-signals.sh
+```
+
+This script launches the example with `.venv/bin/python`, sends `SIGINT` and
+`SIGTERM`, and fails if the process does not exit within the configured timeout.
+
 ## Setup a Project
 
 Start by creating a new directory for your DS-FL project:

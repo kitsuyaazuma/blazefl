@@ -1,5 +1,6 @@
 # ruff: noqa: E402
 import logging
+import signal
 import warnings
 
 from pydantic.warnings import UnsupportedFieldAttributeWarning
@@ -76,6 +77,12 @@ def setup_logging() -> None:
     logger.addHandler(handler)
 
 
+def raise_keyboard_interrupt_on_signal(signum: int, frame: object | None) -> None:
+    _ = signum
+    _ = frame
+    raise KeyboardInterrupt
+
+
 def main(
     model_name: Annotated[
         FedAvgModelName, typer.Option(help="Name of the model to be used.")
@@ -143,6 +150,8 @@ def main(
 
     setup_logging()
     logging.info("\n" + "\n".join([f"  {k}: {v}" for k, v in config.items()]))
+    signal.signal(signal.SIGINT, raise_keyboard_interrupt_on_signal)
+    signal.signal(signal.SIGTERM, raise_keyboard_interrupt_on_signal)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_split_dir = dataset_root_dir / timestamp
@@ -225,6 +234,10 @@ def main(
         pipeline.main()
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt")
+    finally:
+        shutdown = getattr(trainer, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
 
 if __name__ == "__main__":

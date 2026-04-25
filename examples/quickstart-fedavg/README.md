@@ -43,5 +43,17 @@ You can override any setting directly from the command line:
 uv run python main.py --partition client_inner_dirichlet --dir-alpha 0.5
 ```
 
+## Testing Signals
+
+To test graceful shutdown for the real Python entrypoint without going through the
+`uv run` wrapper PID, run:
+
+```bash
+sh ./test-signals.sh
+```
+
+This script launches the example with `.venv/bin/python`, sends `SIGINT` and
+`SIGTERM`, and fails if the process does not exit within the configured timeout.
+
 
 [^1]: B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y. Arcas, "Communication-Efficient Learning of Deep Networks from Decentralized Data," in Proc. 20th Int. Conf. Artif. Intell. Stat., ser. Proc. Mach. Learn. Res., A. Singh and J. Zhu, Eds., vol. 54. PMLR, 2017, pp. 1273–1282.
