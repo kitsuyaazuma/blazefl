@@ -267,6 +267,9 @@ class FedAvgBaseServerHandler(
 
         Returns:
             tuple[float, float]: Average loss and accuracy.
+
+        Raises:
+            ValueError: If the test data loader yields no samples.
         """
         model.to(device)
         model.eval()
@@ -290,6 +293,11 @@ class FedAvgBaseServerHandler(
                 total_loss += loss.item() * batch_size
                 total_correct += int(correct)
                 total_samples += batch_size
+
+        if total_samples == 0:
+            raise ValueError(
+                "test_loader must yield at least one sample for evaluation"
+            )
 
         avg_loss = total_loss / total_samples
         avg_acc = total_correct / total_samples

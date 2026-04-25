@@ -159,6 +159,18 @@ def test_aggregate_order_is_deterministic_across_runs(
     )
 
 
+def test_evaluate_rejects_empty_test_loader(model_selector, device) -> None:
+    model = model_selector.select_model(DummyModelName.DUMMY)
+    empty_dataset = torch.utils.data.TensorDataset(
+        torch.empty((0, 2, 2)),
+        torch.empty((0,), dtype=torch.long),
+    )
+    empty_loader = DataLoader(empty_dataset, batch_size=2)
+
+    with pytest.raises(ValueError, match="must yield at least one sample"):
+        FedAvgBaseServerHandler.evaluate(model, empty_loader, device)
+
+
 @pytest.mark.parametrize(
     ("global_round", "num_clients", "sample_ratio", "message"),
     [
