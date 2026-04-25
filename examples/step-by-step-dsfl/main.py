@@ -33,7 +33,7 @@ class DSFLPipeline:
         self.run = run
 
     def main(self):
-        while not self.handler.if_stop():
+        while not self.handler.is_stopped():
             round_ = self.handler.round
             # server side
             sampled_clients = self.handler.sample_clients()

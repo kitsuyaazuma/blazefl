@@ -190,7 +190,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
 
         return sorted(sampled_clients)
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         return self.round >= self.global_round
 
     def load(self, payload: DSFLUplinkPackage) -> bool:
@@ -430,7 +430,7 @@ class DSFLPipeline:
         self.run = run
 
     def main(self):
-        while not self.handler.if_stop():
+        while not self.handler.is_stopped():
             round_ = self.handler.round
             # server side
             sampled_clients = self.handler.sample_clients()

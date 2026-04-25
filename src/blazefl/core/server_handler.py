@@ -35,7 +35,7 @@ class BaseServerHandler(Protocol[UplinkPackage, DownlinkPackage]):
         """
         ...
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         """
         Determine whether the federated learning process should be terminated.
 

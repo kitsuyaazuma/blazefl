@@ -209,7 +209,7 @@ def test_base_server_and_base_trainer_integration(
     assert done is True
     assert server.round == 1
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def _run_process_pool_trainer(
@@ -274,7 +274,7 @@ def test_base_handler_and_process_pool_trainer_integration(
         assert done is True
         assert server.round == round_
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def test_base_handler_and_process_pool_trainer_integration_keyboard_interrupt(
@@ -390,7 +390,7 @@ def test_base_handler_and_thread_pool_trainer_integration(
         assert done is True
         assert server.round == round_
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def _run_thread_pool_trainer(

@@ -168,7 +168,7 @@ class FedAvgBaseServerHandler(
 
         return sorted(sampled_clients)
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         """
         Check if the training process should stop.
 

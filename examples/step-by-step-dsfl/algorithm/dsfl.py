@@ -88,7 +88,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
         )
         return shuffled_indices[: self.open_size_per_round]
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         return self.round >= self.global_round
 
     def load(self, payload: DSFLUplinkPackage) -> bool:
