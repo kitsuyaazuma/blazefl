@@ -7,4 +7,6 @@ API Reference
    :template: autosummary/module.rst
    :recursive:
 
-   blazefl
+   blazefl.core
+   blazefl.contrib
+   blazefl.reproducibility
