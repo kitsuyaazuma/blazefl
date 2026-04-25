@@ -17,7 +17,8 @@ from src.blazefl.contrib.fedavg import (
     FedAvgProcessPoolClientTrainer,
     FedAvgThreadPoolClientTrainer,
 )
-from src.blazefl.core import ModelSelector, PartitionedDataset
+from src.blazefl.core import ModelSelector, PartitionedDataset, serialize_model
+from src.blazefl.reproducibility import setup_reproducibility
 
 
 class DummyModelName(StrEnum):
@@ -28,7 +29,11 @@ class DummyModelSelector(ModelSelector[DummyModelName]):
     def select_model(self, model_name: DummyModelName) -> torch.nn.Module:
         match model_name:
             case DummyModelName.DUMMY:
-                return torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(4, 2))
+                with torch.random.fork_rng():
+                    torch.manual_seed(0)
+                    return torch.nn.Sequential(
+                        torch.nn.Flatten(), torch.nn.Linear(4, 2)
+                    )
 
 
 class DummyDataset(Dataset):
@@ -102,6 +107,57 @@ def device():
 def tmp_state_dir(tmp_path):
     state_dir = tmp_path / "state"
     return state_dir
+
+
+def _make_server_and_trainer(model_selector, partitioned_dataset, device):
+    model_name = DummyModelName.DUMMY
+    kwargs = dict(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=partitioned_dataset,
+        global_round=1,
+        num_clients=10,
+        sample_ratio=0.3,
+        device=device,
+        batch_size=2,
+        seed=42,
+    )
+    server = FedAvgBaseServerHandler(**kwargs)
+    trainer = FedAvgBaseClientTrainer(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=partitioned_dataset,
+        device=device,
+        num_clients=10,
+        epochs=1,
+        batch_size=2,
+        lr=0.01,
+        seed=42,
+    )
+    return server, trainer
+
+
+def test_aggregate_order_is_deterministic_across_runs(
+    model_selector, partitioned_dataset, device
+):
+    """Model parameters must be bitwise-identical across runs with the same seed."""
+
+    def run_one_round():
+        setup_reproducibility(42)
+        server, trainer = _make_server_and_trainer(
+            model_selector, partitioned_dataset, device
+        )
+        cids = server.sample_clients()
+        trainer.local_process(server.downlink_package(), cids)
+        for pkg in trainer.uplink_package():
+            server.load(pkg)
+        return serialize_model(server.model)
+
+    result_a = run_one_round()
+    result_b = run_one_round()
+    assert torch.equal(result_a, result_b), (
+        "Results are not bitwise-identical across runs"
+    )
 
 
 def test_base_server_and_base_trainer_integration(

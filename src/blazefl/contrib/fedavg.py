@@ -1,6 +1,6 @@
 import threading
 from collections.abc import Iterable, Sized
-from concurrent.futures import Future, as_completed
+from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import StrEnum
 from multiprocessing.pool import ApplyResult
@@ -206,7 +206,6 @@ class FedAvgBaseServerHandler(
         Args:
             buffer (list[FedAvgUplinkPackage]): List of uplink packages from clients.
         """
-        buffer.sort(key=lambda x: x.cid)
         parameters_list = [ele.model_parameters for ele in buffer]
         weights_list = [ele.data_size for ele in buffer]
         serialized_parameters = self.aggregate(parameters_list, weights_list)
@@ -786,7 +785,7 @@ class FedAvgThreadPoolClientTrainer(
     def progress_fn(
         self, it: list[Future[FedAvgUplinkPackage]]
     ) -> Iterable[Future[FedAvgUplinkPackage]]:
-        return tqdm(as_completed(it), total=len(it), desc="Client", leave=False)
+        return tqdm(it, desc="Client", leave=False)
 
     def worker(
         self,
