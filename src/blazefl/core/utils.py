@@ -1,6 +1,6 @@
 from copy import copy
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 import torch
 
@@ -14,10 +14,7 @@ class SHMHandle:
     pass
 
 
-T = TypeVar("T")
-
-
-def process_tensors_in_object(  # noqa: UP047
+def process_tensors_in_object[T](
     obj: T, mode: Literal["move", "replace"], max_depth: int = 10
 ) -> T:
     """
@@ -139,7 +136,7 @@ def process_tensors_in_object(  # noqa: UP047
         return _recursive_helper(obj, 0)
 
 
-def reconstruct_from_shared_memory(handle_obj: T, shm_obj: T) -> T:  # noqa: UP047
+def reconstruct_from_shared_memory[T](handle_obj: T, shm_obj: T) -> T:
     """
     Recursively reconstructs an object from a handle-based object and a
     shared memory buffer object.
