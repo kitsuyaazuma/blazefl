@@ -111,7 +111,7 @@ def tmp_state_dir(tmp_path):
 
 def _make_server_and_trainer(model_selector, partitioned_dataset, device):
     model_name = DummyModelName.DUMMY
-    kwargs = dict(
+    server = FedAvgBaseServerHandler(
         model_selector=model_selector,
         model_name=model_name,
         dataset=partitioned_dataset,
@@ -122,7 +122,6 @@ def _make_server_and_trainer(model_selector, partitioned_dataset, device):
         batch_size=2,
         seed=42,
     )
-    server = FedAvgBaseServerHandler(**kwargs)
     trainer = FedAvgBaseClientTrainer(
         model_selector=model_selector,
         model_name=model_name,
@@ -158,6 +157,39 @@ def test_aggregate_order_is_deterministic_across_runs(
     assert torch.equal(result_a, result_b), (
         "Results are not bitwise-identical across runs"
     )
+
+
+@pytest.mark.parametrize(
+    ("global_round", "num_clients", "sample_ratio", "message"),
+    [
+        (0, 10, 0.3, "global_round must be positive"),
+        (1, 0, 0.3, "num_clients must be positive"),
+        (1, 10, 0.0, "sample_ratio must be in the interval"),
+        (1, 10, 1.1, "sample_ratio must be in the interval"),
+        (1, 10, 0.05, "sample_ratio selects zero clients per round"),
+    ],
+)
+def test_base_server_handler_rejects_invalid_sampling_config(
+    model_selector,
+    partitioned_dataset,
+    device,
+    global_round: int,
+    num_clients: int,
+    sample_ratio: float,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        FedAvgBaseServerHandler(
+            model_selector=model_selector,
+            model_name=DummyModelName.DUMMY,
+            dataset=partitioned_dataset,
+            global_round=global_round,
+            num_clients=num_clients,
+            sample_ratio=sample_ratio,
+            device=device,
+            batch_size=2,
+            seed=42,
+        )
 
 
 def test_base_server_and_base_trainer_integration(

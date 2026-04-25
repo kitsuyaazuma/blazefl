@@ -139,7 +139,27 @@ class FedAvgBaseServerHandler(
             num_clients (int): Total number of clients in the federation.
             sample_ratio (float): Fraction of clients to sample in each round.
             device (str): Device to run the model on ('cpu' or 'cuda').
+
+        Raises:
+            ValueError: If the server configuration is invalid.
         """
+        if global_round <= 0:
+            raise ValueError(f"global_round must be positive, got {global_round}")
+        if num_clients <= 0:
+            raise ValueError(f"num_clients must be positive, got {num_clients}")
+        if not 0 < sample_ratio <= 1:
+            raise ValueError(
+                f"sample_ratio must be in the interval (0, 1], got {sample_ratio}"
+            )
+
+        num_clients_per_round = int(num_clients * sample_ratio)
+        if num_clients_per_round <= 0:
+            raise ValueError(
+                "sample_ratio selects zero clients per round; increase sample_ratio "
+                f"or num_clients (got num_clients={num_clients}, "
+                f"sample_ratio={sample_ratio})"
+            )
+
         self.model = model_selector.select_model(model_name)
         self.dataset = dataset
         self.global_round = global_round
@@ -150,7 +170,7 @@ class FedAvgBaseServerHandler(
         self.seed = seed
 
         self.client_buffer_cache: list[FedAvgUplinkPackage] = []
-        self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
+        self.num_clients_per_round = num_clients_per_round
         self.round = 0
 
         self.rng_suite = create_rng_suite(self.seed)
