@@ -2,6 +2,7 @@ import signal
 import threading
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from multiprocessing.pool import ApplyResult
 from typing import Protocol, TypeVar
 
@@ -47,17 +48,24 @@ class BaseClientTrainer(Protocol[UplinkPackage, DownlinkPackage]):
 
 
 ClientConfig = TypeVar("ClientConfig")
+BufferPackage = TypeVar("BufferPackage")
 
 
 class ProcessPoolClientTrainer(
     BaseClientTrainer[UplinkPackage, DownlinkPackage],
-    Protocol[UplinkPackage, DownlinkPackage, ClientConfig],
+    Protocol[UplinkPackage, DownlinkPackage, ClientConfig, BufferPackage],
 ):
     """
     Abstract base class for parallel client training using a process pool.
 
     This class enables parallel processing of clients by distributing tasks across
     multiple processes.
+
+    ``BufferPackage`` is the internal transport type used between worker processes and
+    the parent. It may differ from ``UplinkPackage`` when workers use shared memory
+    placeholders (e.g. ``SHMHandle``). The conversion is handled by
+    ``convert_buffer_to_uplink``, which is called inside ``local_process`` after
+    reconstruction from shared memory.
 
     Attributes:
         num_parallels (int): Number of parallel processes to use.
@@ -125,8 +133,8 @@ class ProcessPoolClientTrainer(
         device: str,
         stop_event: threading.Event,
         *,
-        shm_buffer: UplinkPackage | None = None,
-    ) -> UplinkPackage:
+        shm_buffer: BufferPackage | None = None,
+    ) -> BufferPackage:
         """
         Process a single client's training task.
 
@@ -141,17 +149,62 @@ class ProcessPoolClientTrainer(
                 The downlink payload from the server
             device (str): Device to use for processing (e.g., "cpu", "cuda:0").
             stop_event (threading.Event): Event to signal stopping the worker.
-            shm_buffer (UplinkPackage | None):
+            shm_buffer (BufferPackage | None):
                 Optional shared memory buffer for the uplink package.
 
         Returns:
-            UplinkPackage:
-                The uplink package containing the client's results.
+            BufferPackage:
+                The transport package containing the client's results.
         """
         ...
 
-    def prepare_uplink_package_buffer(self) -> UplinkPackage:
+    def prepare_uplink_package_buffer(self) -> BufferPackage:
+        """
+        Allocate a pre-initialized shared memory buffer for a single client's result.
+
+        Returns:
+            BufferPackage: A buffer object whose tensors are in shared memory.
+        """
         raise NotImplementedError
+
+    def convert_buffer_to_uplink(self, buffer: BufferPackage) -> UplinkPackage:
+        """
+        Convert a reconstructed ``BufferPackage`` to an ``UplinkPackage``.
+
+        Called by ``local_process`` after shared memory reconstruction. When
+        ``BufferPackage`` and ``UplinkPackage`` are the same type, implement this
+        as ``return buffer``.
+
+        Args:
+            buffer (BufferPackage): The reconstructed buffer from shared memory.
+
+        Returns:
+            UplinkPackage: The uplink package to be stored in ``cache``.
+        """
+        raise NotImplementedError
+
+    def shutdown(self) -> None:
+        """
+        Shut down process-shared coordination resources owned by the trainer.
+
+        Subclasses that create a ``multiprocessing.Manager`` should store it on
+        ``self.manager`` so this method can shut it down explicitly.
+        """
+        manager = getattr(self, "manager", None)
+        if manager is None:
+            return
+
+        shutdown = getattr(manager, "shutdown", None)
+        if shutdown is None:
+            return
+
+        shutdown()
+        with suppress(AttributeError):
+            delattr(self, "manager")
+
+    def __del__(self) -> None:
+        with suppress(Exception):
+            self.shutdown()
 
     def local_process(self, payload: DownlinkPackage, cid_list: list[int]) -> None:
         """
@@ -182,6 +235,7 @@ class ProcessPoolClientTrainer(
             initializer=signal.signal,
             initargs=(signal.SIGINT, signal.SIG_IGN),
         )
+        should_terminate_pool = True
         try:
             jobs: list[ApplyResult] = []
             for cid in cid_list:
@@ -205,11 +259,15 @@ class ProcessPoolClientTrainer(
             for i, job in enumerate(self.progress_fn(jobs)):
                 result = job.get()
                 cid = cid_list[i]
-                package = reconstruct_from_shared_memory(result, shm_buffers[cid])
-                self.cache.append(package)
+                buffer = reconstruct_from_shared_memory(result, shm_buffers[cid])
+                self.cache.append(self.convert_buffer_to_uplink(buffer))
+            should_terminate_pool = False
         finally:
             self.stop_event.set()
-            pool.close()
+            if should_terminate_pool:
+                pool.terminate()
+            else:
+                pool.close()
             pool.join()
 
 

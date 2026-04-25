@@ -1,6 +1,6 @@
 from copy import copy
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 import torch
 
@@ -8,16 +8,19 @@ import torch
 @dataclass(frozen=True)
 class SHMHandle:
     """
-    A lightweight, serializable handle to a tensor stored in shared memory.
+    Sentinel placeholder for a tensor stored in shared memory.
+
+    ``process_tensors_in_object(..., mode="replace")`` swaps ``torch.Tensor``
+    instances for ``SHMHandle()`` so a lightweight, serializable object graph can
+    be sent between processes without copying tensor payloads. During
+    reconstruction, ``reconstruct_from_shared_memory`` treats this empty marker as
+    "take the corresponding tensor from the shared-memory buffer".
     """
 
     pass
 
 
-T = TypeVar("T")
-
-
-def process_tensors_in_object(  # noqa: UP047
+def process_tensors_in_object[T](
     obj: T, mode: Literal["move", "replace"], max_depth: int = 10
 ) -> T:
     """
@@ -139,7 +142,7 @@ def process_tensors_in_object(  # noqa: UP047
         return _recursive_helper(obj, 0)
 
 
-def reconstruct_from_shared_memory(handle_obj: T, shm_obj: T) -> T:  # noqa: UP047
+def reconstruct_from_shared_memory[T](handle_obj: T, shm_obj: T) -> T:
     """
     Recursively reconstructs an object from a handle-based object and a
     shared memory buffer object.

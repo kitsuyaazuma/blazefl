@@ -88,7 +88,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
         )
         return shuffled_indices[: self.open_size_per_round]
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         return self.round >= self.global_round
 
     def load(self, payload: DSFLUplinkPackage) -> bool:
@@ -291,8 +291,7 @@ class DSFLThreadPoolClientTrainer(
     ) -> None:
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache: list[DSFLUplinkPackage] = []
 
         self.model_selector = model_selector

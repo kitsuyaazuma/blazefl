@@ -102,7 +102,7 @@ def test_filtered_dataset_assert_length_mismatch() -> None:
     original_targets = [10, 11]  # Length mismatch
 
     indices = [0, 1]
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         _ = FilteredDataset(indices, original_data, original_targets)
 
 

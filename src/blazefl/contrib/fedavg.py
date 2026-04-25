@@ -1,6 +1,6 @@
 import threading
-from collections.abc import Iterable
-from concurrent.futures import Future, as_completed
+from collections.abc import Iterable, Sized
+from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import StrEnum
 from multiprocessing.pool import ApplyResult
@@ -49,8 +49,26 @@ class FedAvgUplinkPackage:
 
 
 @dataclass
-class FedAvgProcessPoolUplinkPackage(FedAvgUplinkPackage):
-    model_parameters: torch.Tensor | SHMHandle  # type: ignore
+class FedAvgProcessPoolUplinkPackage:
+    """
+    Internal transport package used within the process pool machinery.
+
+    Identical to FedAvgUplinkPackage except model_parameters may be an SHMHandle
+    placeholder while the actual tensor lives in shared memory. Converted to
+    FedAvgUplinkPackage before being exposed to the server.
+
+    Attributes:
+        cid (int): Client ID.
+        model_parameters (torch.Tensor | SHMHandle): Serialized model parameters or
+            a shared memory placeholder.
+        data_size (int): Number of data samples used in the client's training.
+        metadata (dict | None): Optional metadata, such as evaluation metrics.
+    """
+
+    cid: int
+    model_parameters: torch.Tensor | SHMHandle
+    data_size: int
+    metadata: dict[str, float] | None = None
 
 
 @dataclass
@@ -121,7 +139,27 @@ class FedAvgBaseServerHandler(
             num_clients (int): Total number of clients in the federation.
             sample_ratio (float): Fraction of clients to sample in each round.
             device (str): Device to run the model on ('cpu' or 'cuda').
+
+        Raises:
+            ValueError: If the server configuration is invalid.
         """
+        if global_round <= 0:
+            raise ValueError(f"global_round must be positive, got {global_round}")
+        if num_clients <= 0:
+            raise ValueError(f"num_clients must be positive, got {num_clients}")
+        if not 0 < sample_ratio <= 1:
+            raise ValueError(
+                f"sample_ratio must be in the interval (0, 1], got {sample_ratio}"
+            )
+
+        num_clients_per_round = int(num_clients * sample_ratio)
+        if num_clients_per_round <= 0:
+            raise ValueError(
+                "sample_ratio selects zero clients per round; increase sample_ratio "
+                f"or num_clients (got num_clients={num_clients}, "
+                f"sample_ratio={sample_ratio})"
+            )
+
         self.model = model_selector.select_model(model_name)
         self.dataset = dataset
         self.global_round = global_round
@@ -132,7 +170,7 @@ class FedAvgBaseServerHandler(
         self.seed = seed
 
         self.client_buffer_cache: list[FedAvgUplinkPackage] = []
-        self.num_clients_per_round = int(self.num_clients * self.sample_ratio)
+        self.num_clients_per_round = num_clients_per_round
         self.round = 0
 
         self.rng_suite = create_rng_suite(self.seed)
@@ -150,7 +188,7 @@ class FedAvgBaseServerHandler(
 
         return sorted(sampled_clients)
 
-    def if_stop(self) -> bool:
+    def is_stopped(self) -> bool:
         """
         Check if the training process should stop.
 
@@ -188,7 +226,6 @@ class FedAvgBaseServerHandler(
         Args:
             buffer (list[FedAvgUplinkPackage]): List of uplink packages from clients.
         """
-        buffer.sort(key=lambda x: x.cid)
         parameters_list = [ele.model_parameters for ele in buffer]
         weights_list = [ele.data_size for ele in buffer]
         serialized_parameters = self.aggregate(parameters_list, weights_list)
@@ -230,6 +267,9 @@ class FedAvgBaseServerHandler(
 
         Returns:
             tuple[float, float]: Average loss and accuracy.
+
+        Raises:
+            ValueError: If the test data loader yields no samples.
         """
         model.to(device)
         model.eval()
@@ -253,6 +293,11 @@ class FedAvgBaseServerHandler(
                 total_loss += loss.item() * batch_size
                 total_correct += int(correct)
                 total_samples += batch_size
+
+        if total_samples == 0:
+            raise ValueError(
+                "test_loader must yield at least one sample for evaluation"
+            )
 
         avg_loss = total_loss / total_samples
         avg_acc = total_correct / total_samples
@@ -344,7 +389,6 @@ class FedAvgBaseClientTrainer(
         self.seed = seed
 
         self.model.to(self.device)
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
         self.criterion = torch.nn.CrossEntropyLoss()
         self.cache: list[FedAvgUplinkPackage] = []
 
@@ -395,8 +439,8 @@ class FedAvgBaseClientTrainer(
         """
         deserialize_model(self.model, model_parameters)
         self.model.train()
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
 
-        data_size = 0
         for _ in range(self.epochs):
             for data, target in train_loader:
                 data = data.to(self.device)
@@ -405,12 +449,12 @@ class FedAvgBaseClientTrainer(
                 output = self.model(data)
                 loss = self.criterion(output, target)
 
-                data_size += len(target)
-
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
-                self.optimizer.step()
+                optimizer.step()
 
+        assert isinstance(train_loader.dataset, Sized)
+        data_size = len(train_loader.dataset)
         model_parameters = serialize_model(self.model)
 
         return FedAvgUplinkPackage(cid, model_parameters, data_size)
@@ -459,9 +503,47 @@ class FedAvgClientConfig:
     state_path: Path
 
 
+def _fedavg_train(
+    model: torch.nn.Module,
+    model_parameters: torch.Tensor,
+    train_loader: DataLoader,
+    device: str,
+    epochs: int,
+    lr: float,
+    stop_event: threading.Event,
+) -> tuple[torch.Tensor, int]:
+    model.to(device)
+    deserialize_model(model, model_parameters)
+    model.train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    for _ in range(epochs):
+        if stop_event.is_set():
+            break
+        for data, target in train_loader:
+            data = data.to(device)
+            target = target.to(device)
+
+            output = model(data)
+            loss = criterion(output, target)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    assert isinstance(train_loader.dataset, Sized)
+    data_size = len(train_loader.dataset)
+    serialized_parameters = serialize_model(model)
+    return serialized_parameters, data_size
+
+
 class FedAvgProcessPoolClientTrainer(
     ProcessPoolClientTrainer[
-        FedAvgProcessPoolUplinkPackage, FedAvgDownlinkPackage, FedAvgClientConfig
+        FedAvgUplinkPackage,
+        FedAvgDownlinkPackage,
+        FedAvgClientConfig,
+        FedAvgProcessPoolUplinkPackage,
     ]
 ):
     """
@@ -482,7 +564,7 @@ class FedAvgProcessPoolClientTrainer(
         lr (float): Learning rate for the optimizer.
         seed (int): Seed for reproducibility.
         num_parallels (int): Number of parallel processes for training.
-        device_count (int | None): Number of CUDA devices available (if using GPU).
+        device_count (int): Number of CUDA devices available (0 if not using GPU).
     """
 
     def __init__(
@@ -517,9 +599,8 @@ class FedAvgProcessPoolClientTrainer(
         """
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
-        self.cache = []
+        self.device_count = torch.cuda.device_count()
+        self.cache: list[FedAvgUplinkPackage] = []
 
         self.model_selector = model_selector
         self.model_name = model_name
@@ -550,6 +631,17 @@ class FedAvgProcessPoolClientTrainer(
             cid=-1,
             model_parameters=self.model_parameters_buffer.clone(),
             data_size=0,
+        )
+
+    def convert_buffer_to_uplink(
+        self, buffer: FedAvgProcessPoolUplinkPackage
+    ) -> FedAvgUplinkPackage:
+        assert isinstance(buffer.model_parameters, torch.Tensor)
+        return FedAvgUplinkPackage(
+            cid=buffer.cid,
+            model_parameters=buffer.model_parameters,
+            data_size=buffer.data_size,
+            metadata=buffer.metadata,
         )
 
     @staticmethod
@@ -585,7 +677,10 @@ class FedAvgProcessPoolClientTrainer(
         setup_reproducibility(config.seed)
         if config.state_path.exists():
             state = torch.load(config.state_path, weights_only=False)
-            assert isinstance(state, RNGSuite)
+            if not isinstance(state, RNGSuite):
+                raise TypeError(
+                    f"Expected RNGSuite in {config.state_path}, got {type(state)}"
+                )
         else:
             state = create_rng_suite(config.seed)
 
@@ -613,11 +708,16 @@ class FedAvgProcessPoolClientTrainer(
             dataset=train_loader.dataset,
         )
 
-        assert (
-            shm_buffer is not None
-            and isinstance(shm_buffer.model_parameters, torch.Tensor)
-            and isinstance(package.model_parameters, torch.Tensor)
-        )
+        if shm_buffer is None or not isinstance(
+            shm_buffer.model_parameters, torch.Tensor
+        ):
+            raise RuntimeError(
+                "shm_buffer must be a pre-allocated shared memory package"
+            )
+        if not isinstance(package.model_parameters, torch.Tensor):
+            raise RuntimeError(
+                "package.model_parameters must be a Tensor before SHM copy"
+            )
         shm_buffer.model_parameters.copy_(package.model_parameters)
         package.model_parameters = SHMHandle()
         return package
@@ -633,47 +733,10 @@ class FedAvgProcessPoolClientTrainer(
         stop_event: threading.Event,
         cid: int,
     ) -> FedAvgProcessPoolUplinkPackage:
-        """
-        Train the model with the given training data loader.
-
-        Args:
-            model (torch.nn.Module): The model to train.
-            model_parameters (torch.Tensor): Initial global model parameters.
-            train_loader (DataLoader): DataLoader for the training data.
-            device (str): Device to run the training on.
-            epochs (int): Number of local training epochs.
-            lr (float): Learning rate for the optimizer.
-
-        Returns:
-            FedAvgUplinkPackage: Uplink package containing updated model parameters
-            and data size.
-        """
-        model.to(device)
-        deserialize_model(model, model_parameters)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-        criterion = torch.nn.CrossEntropyLoss()
-
-        data_size = 0
-        for _ in range(epochs):
-            if stop_event.is_set():
-                break
-            for data, target in train_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                data_size += len(target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        model_parameters = serialize_model(model)
-
-        return FedAvgProcessPoolUplinkPackage(cid, model_parameters, data_size)
+        serialized_parameters, data_size = _fedavg_train(
+            model, model_parameters, train_loader, device, epochs, lr, stop_event
+        )
+        return FedAvgProcessPoolUplinkPackage(cid, serialized_parameters, data_size)
 
     def get_client_config(self, cid: int) -> FedAvgClientConfig:
         """
@@ -698,7 +761,7 @@ class FedAvgProcessPoolClientTrainer(
         )
         return data
 
-    def uplink_package(self) -> list[FedAvgProcessPoolUplinkPackage]:
+    def uplink_package(self) -> list[FedAvgUplinkPackage]:
         """
         Retrieve the uplink packages for transmission to the server.
 
@@ -731,8 +794,7 @@ class FedAvgThreadPoolClientTrainer(
     ) -> None:
         self.num_parallels = num_parallels
         self.device = device
-        if self.device == "cuda":
-            self.device_count = torch.cuda.device_count()
+        self.device_count = torch.cuda.device_count()
         self.cache: list[FedAvgUplinkPackage] = []
 
         self.model_selector = model_selector
@@ -751,7 +813,7 @@ class FedAvgThreadPoolClientTrainer(
     def progress_fn(
         self, it: list[Future[FedAvgUplinkPackage]]
     ) -> Iterable[Future[FedAvgUplinkPackage]]:
-        return tqdm(as_completed(it), total=len(it), desc="Client", leave=False)
+        return tqdm(it, desc="Client", leave=False)
 
     def worker(
         self,
@@ -790,47 +852,10 @@ class FedAvgThreadPoolClientTrainer(
         stop_event: threading.Event,
         cid: int,
     ) -> FedAvgUplinkPackage:
-        """
-        Train the model with the given training data loader.
-
-        Args:
-            model (torch.nn.Module): The model to train.
-            model_parameters (torch.Tensor): Initial global model parameters.
-            train_loader (DataLoader): DataLoader for the training data.
-            device (str): Device to run the training on.
-            epochs (int): Number of local training epochs.
-            lr (float): Learning rate for the optimizer.
-
-        Returns:
-            FedAvgUplinkPackage: Uplink package containing updated model parameters
-            and data size.
-        """
-        model.to(device)
-        deserialize_model(model, model_parameters)
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-        criterion = torch.nn.CrossEntropyLoss()
-
-        data_size = 0
-        for _ in range(epochs):
-            if stop_event.is_set():
-                break
-            for data, target in train_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                data_size += len(target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        model_parameters = serialize_model(model)
-
-        return FedAvgUplinkPackage(cid, model_parameters, data_size)
+        serialized_parameters, data_size = _fedavg_train(
+            model, model_parameters, train_loader, device, epochs, lr, stop_event
+        )
+        return FedAvgUplinkPackage(cid, serialized_parameters, data_size)
 
     def uplink_package(self) -> list[FedAvgUplinkPackage]:
         package = self.cache

@@ -17,7 +17,8 @@ from src.blazefl.contrib.fedavg import (
     FedAvgProcessPoolClientTrainer,
     FedAvgThreadPoolClientTrainer,
 )
-from src.blazefl.core import ModelSelector, PartitionedDataset
+from src.blazefl.core import ModelSelector, PartitionedDataset, serialize_model
+from src.blazefl.reproducibility import setup_reproducibility
 
 
 class DummyModelName(StrEnum):
@@ -28,7 +29,11 @@ class DummyModelSelector(ModelSelector[DummyModelName]):
     def select_model(self, model_name: DummyModelName) -> torch.nn.Module:
         match model_name:
             case DummyModelName.DUMMY:
-                return torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(4, 2))
+                with torch.random.fork_rng():
+                    torch.manual_seed(0)
+                    return torch.nn.Sequential(
+                        torch.nn.Flatten(), torch.nn.Linear(4, 2)
+                    )
 
 
 class DummyDataset(Dataset):
@@ -104,6 +109,101 @@ def tmp_state_dir(tmp_path):
     return state_dir
 
 
+def _make_server_and_trainer(model_selector, partitioned_dataset, device):
+    model_name = DummyModelName.DUMMY
+    server = FedAvgBaseServerHandler(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=partitioned_dataset,
+        global_round=1,
+        num_clients=10,
+        sample_ratio=0.3,
+        device=device,
+        batch_size=2,
+        seed=42,
+    )
+    trainer = FedAvgBaseClientTrainer(
+        model_selector=model_selector,
+        model_name=model_name,
+        dataset=partitioned_dataset,
+        device=device,
+        num_clients=10,
+        epochs=1,
+        batch_size=2,
+        lr=0.01,
+        seed=42,
+    )
+    return server, trainer
+
+
+def test_aggregate_order_is_deterministic_across_runs(
+    model_selector, partitioned_dataset, device
+):
+    """Model parameters must be bitwise-identical across runs with the same seed."""
+
+    def run_one_round():
+        setup_reproducibility(42)
+        server, trainer = _make_server_and_trainer(
+            model_selector, partitioned_dataset, device
+        )
+        cids = server.sample_clients()
+        trainer.local_process(server.downlink_package(), cids)
+        for pkg in trainer.uplink_package():
+            server.load(pkg)
+        return serialize_model(server.model)
+
+    result_a = run_one_round()
+    result_b = run_one_round()
+    assert torch.equal(result_a, result_b), (
+        "Results are not bitwise-identical across runs"
+    )
+
+
+def test_evaluate_rejects_empty_test_loader(model_selector, device) -> None:
+    model = model_selector.select_model(DummyModelName.DUMMY)
+    empty_dataset = torch.utils.data.TensorDataset(
+        torch.empty((0, 2, 2)),
+        torch.empty((0,), dtype=torch.long),
+    )
+    empty_loader = DataLoader(empty_dataset, batch_size=2)
+
+    with pytest.raises(ValueError, match="must yield at least one sample"):
+        FedAvgBaseServerHandler.evaluate(model, empty_loader, device)
+
+
+@pytest.mark.parametrize(
+    ("global_round", "num_clients", "sample_ratio", "message"),
+    [
+        (0, 10, 0.3, "global_round must be positive"),
+        (1, 0, 0.3, "num_clients must be positive"),
+        (1, 10, 0.0, "sample_ratio must be in the interval"),
+        (1, 10, 1.1, "sample_ratio must be in the interval"),
+        (1, 10, 0.05, "sample_ratio selects zero clients per round"),
+    ],
+)
+def test_base_server_handler_rejects_invalid_sampling_config(
+    model_selector,
+    partitioned_dataset,
+    device,
+    global_round: int,
+    num_clients: int,
+    sample_ratio: float,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        FedAvgBaseServerHandler(
+            model_selector=model_selector,
+            model_name=DummyModelName.DUMMY,
+            dataset=partitioned_dataset,
+            global_round=global_round,
+            num_clients=num_clients,
+            sample_ratio=sample_ratio,
+            device=device,
+            batch_size=2,
+            seed=42,
+        )
+
+
 def test_base_server_and_base_trainer_integration(
     model_selector, partitioned_dataset, device
 ):
@@ -153,7 +253,7 @@ def test_base_server_and_base_trainer_integration(
     assert done is True
     assert server.round == 1
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def _run_process_pool_trainer(
@@ -218,7 +318,7 @@ def test_base_handler_and_process_pool_trainer_integration(
         assert done is True
         assert server.round == round_
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def test_base_handler_and_process_pool_trainer_integration_keyboard_interrupt(
@@ -334,7 +434,7 @@ def test_base_handler_and_thread_pool_trainer_integration(
         assert done is True
         assert server.round == round_
 
-    assert server.if_stop() is True
+    assert server.is_stopped() is True
 
 
 def _run_thread_pool_trainer(
