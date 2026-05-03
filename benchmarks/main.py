@@ -117,8 +117,10 @@ def main(
     model_name: Literal["CNN", "RESNET18", "RESNET50", "RESNET101"] = "CNN",
 ) -> None:
     logging.info("Starting benchmark...")
-    # cpu_count = os.cpu_count() or 1
-    cpu_count = len(os.sched_getaffinity(0)) or 1
+    try:
+        cpu_count = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cpu_count = os.cpu_count() or 1
     gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
     num_parallels: list[int] = [2**i for i in range(int(math.log2(cpu_count) + 1))]
