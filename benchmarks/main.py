@@ -183,7 +183,7 @@ def main(
             "export RAY_TMPDIR=/tmp/flower-case && "
             "FLWR_HOME=$(pwd) "
             "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 "
-            "uv run flwr run . local "
+            "uv run flwr run . local --stream "
             f"--run-config 'model-name=\"{model_name}\"' "
             "&& rm -rf ${RAY_TMPDIR} "
             "&& cd .."

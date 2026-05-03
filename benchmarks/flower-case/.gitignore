@@ -1,1 +1,8 @@
+wandb
+.venv/
+.ruff_cache/
+__pycache__/
+apps/
+local-superlink/
+source
 config.toml
