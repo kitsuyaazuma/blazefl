@@ -33,7 +33,7 @@ class FedAvgBenchmarkPipeline:
 
     def main(self):
         start_time = time.perf_counter()
-        while not self.handler.if_stop():
+        while not self.handler.is_stopped():
             round_ = self.handler.round
             # server side
             sampled_clients = self.handler.sample_clients()

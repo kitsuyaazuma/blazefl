@@ -271,7 +271,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
 The `BaseServerHandler` class requires five core methods to be implemented:
 
 - `sample_clients`
-- `if_stop`
+- `is_stopped`
 - `load`
 - `global_update`
 - `downlink_package`
@@ -387,7 +387,7 @@ class DSFLThreadPoolClientTrainer(
             cid=cid,
             batch_size=self.batch_size,
         )
-        loss, acc = DSFLBaseServerHandler.evaulate(
+        loss, acc = DSFLBaseServerHandler.evaluate(
             model=model,
             test_loader=test_loader,
             device=device,

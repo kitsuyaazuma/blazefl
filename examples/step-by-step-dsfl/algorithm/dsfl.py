@@ -186,7 +186,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
         return
 
     @staticmethod
-    def evaulate(
+    def evaluate(
         model: torch.nn.Module, test_loader: DataLoader, device: str
     ) -> tuple[float, float]:
         model.to(device)
@@ -218,7 +218,7 @@ class DSFLBaseServerHandler(BaseServerHandler[DSFLUplinkPackage, DSFLDownlinkPac
         return avg_loss, avg_acc
 
     def get_summary(self) -> dict[str, float]:
-        server_loss, server_acc = DSFLBaseServerHandler.evaulate(
+        server_loss, server_acc = DSFLBaseServerHandler.evaluate(
             self.model,
             self.dataset.get_dataloader(
                 type_=DSFLPartitionType.TEST,
@@ -401,7 +401,7 @@ class DSFLThreadPoolClientTrainer(
             cid=cid,
             batch_size=self.batch_size,
         )
-        loss, acc = DSFLBaseServerHandler.evaulate(
+        loss, acc = DSFLBaseServerHandler.evaluate(
             model=model,
             test_loader=test_loader,
             device=device,
