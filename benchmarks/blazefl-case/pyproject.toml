@@ -7,7 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "blazefl[contrib,reproducibility]>=2.0.3",
     "quickstart-fedavg",
-    "torch>=2.10.0",
+    "torch>=2.12.0",
     "torchvision>=0.25.0",
     "typer>=0.21.1",
 ]
